@@ -92,10 +92,99 @@
             </div>
           </div>
 
+          <div class="section">
+            <div class="h">Browser Companion</div>
+            <div class="rows">
+              <div class="row">
+                <div class="t">
+                  <div class="l">Browser extension</div>
+                  <div class="d">Send browser downloads straight to Loadout</div>
+                </div>
+                <div class="ctl">
+                  <button type="button" class="link" id="browser-setup-btn">Setup guide</button>
+                </div>
+              </div>
+              <div class="row">
+                <div class="t">
+                  <div class="l">Allow new pairing</div>
+                  <div id="allow-pairing-status" class="ssub">Lets one more browser profile connect, for 2 minutes</div>
+                </div>
+                <div class="ctl">
+                  <button type="button" id="allow-new-pairing-btn" class="btn">Allow</button>
+                </div>
+              </div>
+              <div class="row">
+                <div class="t">
+                  <div class="l">Paired browsers</div>
+                  <div id="paired-profiles-empty" class="ssub">No browsers paired yet.</div>
+                  <div id="paired-profiles-list" class="profilelist"></div>
+                </div>
+              </div>
+            </div>
+            <div class="sectionfoot">
+              <span class="dot" id="paired-profiles-dot"></span>
+              <span id="paired-profiles-count">0 browsers paired</span>
+            </div>
+          </div>
+
           <p id="settings-error" class="error hidden"></p>
         </div>
         <div class="footer">
           <span>Loadout</span>
+        </div>
+      </div>
+
+      <div id="browser-setup-page" class="hidden">
+        <div class="header">
+          <span>Browser setup</span>
+          <button type="button" class="close" id="browser-setup-close-btn">Close</button>
+        </div>
+        <div class="body">
+          <div class="intro">The Browser Companion captures your browser downloads and sends them straight to
+            Loadout. It's a one-time, 1-minute setup &mdash; you won't need to do this again.</div>
+
+          <div class="step">
+            <div class="num">1</div>
+            <div class="stepbody">
+              <div class="t">Open your browser's extensions page</div>
+              <div class="d"><span class="pathbit">chrome://extensions</span></div>
+              <button type="button" class="btn" id="setup-open-page-btn">Open page</button>
+              <div id="setup-page-status" class="ssub"></div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="num">2</div>
+            <div class="stepbody">
+              <div class="t">Turn on Developer mode</div>
+              <div class="d">Toggle switch, top-right corner of that page</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="num">3</div>
+            <div class="stepbody">
+              <div class="t">Open the companion's folder</div>
+              <div class="d">Where it lives on your computer</div>
+              <button type="button" class="btn" id="setup-open-folder-btn">Open folder</button>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="num">4</div>
+            <div class="stepbody">
+              <div class="t">Click "Load unpacked", then pick that folder</div>
+              <div class="d">The companion will show up in your extensions list, ready to go</div>
+            </div>
+          </div>
+
+          <div class="intro">&#128204; Tip: pin it to your toolbar (the puzzle-piece icon in Chrome) so it's always
+            one click away.</div>
+
+          <p id="browser-setup-error" class="error hidden"></p>
+        </div>
+        <div class="footer">
+          <button type="button" class="btn primary" id="setup-done-btn">Installed it</button>
         </div>
       </div>
 

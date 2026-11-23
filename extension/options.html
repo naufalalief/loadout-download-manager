@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Loadout — Extension Options</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="page">
+    <div class="header">
+      <div class="headicon">
+        <svg class="sprite" width="24" height="24" viewBox="0 0 24 24">
+          <!-- Same download-arrow icon as content.js's APP_ICON_MARKUP and
+               src/icons.js's appIcon. Keep in sync with both if that
+               shape ever changes. -->
+          <path d="M12 3v12m0 0l-4-4m4 4l4-4"/>
+          <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+        </svg>
+      </div>
+      <div>
+        <div class="htitle">Loadout</div>
+        <div class="htag">Browser Companion</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="statusrow">
+        <div class="statusdot" id="status-dot"></div>
+        <div class="statustext" id="status">Checking...</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="note">
+        Pairing happens automatically the first time you download or extract
+        something. If it hasn't connected, or this extension was moved or
+        reinstalled and the app still thinks the old install is paired, use
+        these:
+      </div>
+      <div class="actrow">
+        <button id="pair-btn" class="btn" type="button" disabled>Pair manually</button>
+        <button id="forget-btn" class="btn danger" type="button">Forget pairing</button>
+      </div>
+      <p id="pair-error" class="msg error"></p>
+      <p id="forget-status" class="msg"></p>
+    </div>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>
