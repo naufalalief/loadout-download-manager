@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Loadout",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Sends browser downloads and video extractions to the Loadout desktop app.",
   "permissions": ["downloads", "cookies", "storage"],
   "host_permissions": ["http://127.0.0.1/*", "*://*/*"],
@@ -9,6 +9,7 @@
     "service_worker": "background.js"
   },
   "action": {
+    "default_popup": "popup.html",
     "default_title": "Loadout",
     "default_icon": {
       "16": "icons/icon16.png",
