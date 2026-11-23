@@ -1,6 +1,7 @@
 console.log('background worker loaded');
 
 const DM_APP_URL = 'http://127.0.0.1:57431/downloads';
+const DM_EXTRACT_URL = 'http://127.0.0.1:57431/extract';
 const PAIR_URL = 'http://127.0.0.1:57431/pair';
 
 /** Timeout for the handoff POST itself. Longer than options.js's /ping
@@ -9,8 +10,8 @@ const PAIR_URL = 'http://127.0.0.1:57431/pair';
  * rather than a trivial liveness check. */
 const SEND_TIMEOUT_MS = 5000;
 
-/** Shared in-flight `/pair` attempt, so a burst of downloads that all
- * arrive before pairing has happened share one request instead of each
+/** Shared in-flight `/pair` attempt, so a burst of downloads/extracts that
+ * all arrive before pairing has happened share one request instead of each
  * firing their own -- see `ensurePaired()`. */
 let pairingPromise = null;
 
@@ -217,6 +218,105 @@ async function captureHeaders(url, referrer) {
 
   return { cookieHeader, referer: refererValue, userAgent };
 }
+
+/**
+ * Hands a video-extraction request off to the core app's local server.
+ *
+ * Mirrors sendToApp()'s fail-safe shape above, with two differences: it
+ * posts to `/extract` instead of `/downloads` (the page URL to probe with
+ * yt-dlp, not a direct file URL), and it returns a `{ok, error?}` result
+ * instead of a bare boolean, so the content script's button can surface
+ * a short reason for a failure if it chooses to.
+ *
+ * Fails safe in every case: if no token is available even after
+ * `ensurePaired()`'s auto-pair attempt, it returns `{ok: false}`
+ * immediately without attempting a fetch at all. Otherwise it POSTs and
+ * resolves `{ok: true}` only on a `201` response -- any other status, a
+ * network error (including the app simply not running), or the request
+ * timing out (see `SEND_TIMEOUT_MS`) resolves `{ok: false, error: "..."}`
+ * instead of throwing.
+ *
+ * @param {string} pageUrl - the page URL to extract from. Callers must
+ *   resolve this themselves, as close as possible to the moment the user
+ *   asked for the download -- this function does no resolution of its
+ *   own and just posts whatever it's given.
+ * @param {{cookieHeader: string, referer: string, userAgent: string}} headers
+ *   - output of captureHeaders() for this pageUrl.
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
+async function sendExtractProbe(pageUrl, headers) {
+  const dmToken = await ensurePaired();
+  if (!dmToken) {
+    return { ok: false, error: 'Not paired with the app yet.' };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+  try {
+    const response = await fetch(DM_EXTRACT_URL, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Dm-Token': dmToken,
+      },
+      body: JSON.stringify({
+        url: pageUrl,
+        headers: {
+          Cookie: headers.cookieHeader,
+          Referer: headers.referer,
+          'User-Agent': headers.userAgent,
+        },
+      }),
+    });
+    if (response.status === 201) {
+      chrome.storage.local.set({ lastSent: { label: pageUrl, sentAt: Date.now() } }).catch(() => {});
+      return { ok: true };
+    }
+    return { ok: false, error: `Extract request failed (status ${response.status}).` };
+  } catch (err) {
+    // The app may simply not be running, the request may have timed out,
+    // or some other network error occurred. Either way this must resolve
+    // to a failure result, never propagate as an uncaught rejection.
+    return { ok: false, error: 'Could not reach the app. Is it running?' };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Handles messages from content scripts.
+ *
+ * On `{type: "extractVideo", pageUrl}`: captures headers for `pageUrl`
+ * (empty referrer -- there is no meaningful "download referrer" concept
+ * for a page-URL extraction, unlike the direct-file-download case
+ * `captureHeaders` was originally written for) and hands off to
+ * `sendExtractProbe()`. Returns `true` so Chrome keeps the message
+ * channel open while that async work runs, and eventually calls
+ * `sendResponse` with `{ok: boolean, error?: string}`.
+ *
+ * Never throws: any failure anywhere in the async work below resolves to
+ * `sendResponse({ok: false, ...})` rather than leaving the sender's
+ * `sendMessage()` promise hanging forever.
+ */
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== 'extractVideo') {
+    // Not a message this listener handles.
+    return false;
+  }
+
+  (async () => {
+    try {
+      const headers = await captureHeaders(message.pageUrl, '');
+      const result = await sendExtractProbe(message.pageUrl, headers);
+      sendResponse(result);
+    } catch (err) {
+      sendResponse({ ok: false, error: 'Unexpected error handling extract request.' });
+    }
+  })();
+
+  return true;
+});
 
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   // Local to this single invocation only: no module-level state, so a

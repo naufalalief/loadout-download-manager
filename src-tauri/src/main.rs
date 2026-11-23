@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use loadout::download::queue::QueueManager;
+use loadout::extract::binaries::BinaryManager;
+use loadout::extract::jobs::ExtractJobManager;
 use loadout::server::{self, PairingState};
 use tauri::Manager;
 
@@ -15,7 +17,9 @@ use tauri::Manager;
 /// single-instance callback below -- a second launch (e.g. from the Start
 /// menu while the app is already running) hands off to this one instead
 /// of starting a second process that would try to bind the same handoff
-/// server port.
+/// server port -- and by a new extract job's window-opener callback, so
+/// the app surfaces itself when the extension starts an extraction while
+/// it was in the background.
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -51,13 +55,30 @@ fn main() {
 
     let settings_store = Arc::new(settings_store);
 
-    // Local handoff HTTP server (pairing + `/downloads`): shares the same
-    // `QueueManager` instance managed below, and persists its paired-
-    // profile list alongside the other app-data files.
+    // Local handoff HTTP server (pairing + `/downloads` + `/extract`):
+    // shares the same `QueueManager` instance managed below, and persists
+    // its paired-profile list alongside the other app-data files.
     let handoff_queue = Arc::clone(&queue_manager);
     let pairing_state = Arc::new(PairingState::new(
         settings::app_data_dir().join("paired_profiles.json"),
     ));
+
+    // `ExtractJobManager` for the handoff server's `/extract` route. Built
+    // here, alongside `queue_manager`, so `server::serve` has something
+    // real to drive `/extract` with; its placeholder `on_new_job` callback
+    // below is replaced with the real window-opener inside `.setup()`,
+    // once an `AppHandle` actually exists.
+    let binaries = Arc::new(BinaryManager::new(settings::app_data_dir().join("bin")));
+    let extract_jobs = {
+        let runtime_handle = tauri::async_runtime::handle();
+        let _guard = runtime_handle.inner().enter();
+        Arc::new(ExtractJobManager::new(
+            PathBuf::from(&initial_settings.download_dir),
+            Arc::clone(&binaries),
+            Arc::new(|| {}),
+            initial_settings.max_concurrent,
+        ))
+    };
 
     tauri::Builder::default()
         // Must be the first plugin registered (per the plugin's own docs):
@@ -72,6 +93,8 @@ fn main() {
         }))
         .manage(queue_manager)
         .manage(settings_store)
+        .manage(Arc::clone(&binaries))
+        .manage(Arc::clone(&extract_jobs))
         .manage(Arc::clone(&pairing_state))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -79,8 +102,18 @@ fn main() {
         // (`commands::pick_download_folder`).
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            // Replaces the placeholder `on_new_job` callback `extract_jobs`
+            // was constructed with above (no `AppHandle` existed yet at
+            // that point) with the real one, now that it does.
+            let opener_handle = app.handle().clone();
+            extract_jobs.set_window_opener(Arc::new(move || {
+                show_main_window(&opener_handle);
+            }));
+
             show_main_window(app.handle());
-            tauri::async_runtime::spawn(server::serve(handoff_queue, pairing_state));
+
+            tauri::async_runtime::spawn(server::serve(handoff_queue, pairing_state, extract_jobs));
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -105,6 +138,13 @@ fn main() {
             commands::pairing_mode_remaining_seconds,
             commands::forget_paired_profile,
             commands::rename_paired_profile,
+            commands::list_extract_jobs,
+            commands::choose_extract_format,
+            commands::cancel_extract_job,
+            commands::retry_extract_job,
+            commands::remove_extract_job,
+            commands::remove_extract_job_and_delete_file,
+            commands::check_ytdlp_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

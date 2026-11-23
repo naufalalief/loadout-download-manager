@@ -1,7 +1,8 @@
-// Frontend for the download queue: polls `list_downloads` and renders them
-// as table rows, plus the always-visible add-link bar and the Settings
-// page. Plain JS, no framework, no build step -- `window.__TAURI__` is
-// exposed because `withGlobalTauri` is enabled in `tauri.conf.json`.
+// Frontend for the download queue: polls `list_downloads`/`list_extract_jobs`
+// and renders them as table rows, plus the always-visible add-link bar and
+// the Settings / Browser setup pages. Plain JS, no framework, no build step
+// -- `window.__TAURI__` is exposed because `withGlobalTauri` is enabled in
+// `tauri.conf.json`.
 
 import { appIcon, settingsIcon } from "./icons.js";
 
@@ -28,6 +29,8 @@ const settingsBrowseDownloadDirEl = document.getElementById("settings-browse-dow
 const settingsMaxConcurrentEl = document.getElementById("settings-max-concurrent");
 const settingsSpeedLimitEl = document.getElementById("settings-speed-limit");
 const settingsErrorEl = document.getElementById("settings-error");
+const checkYtdlpUpdateBtn = document.getElementById("check-ytdlp-update-btn");
+const ytdlpUpdateStatusEl = document.getElementById("ytdlp-update-status");
 const allowNewPairingBtn = document.getElementById("allow-new-pairing-btn");
 const allowPairingStatusEl = document.getElementById("allow-pairing-status");
 const pairedProfilesListEl = document.getElementById("paired-profiles-list");
@@ -160,6 +163,11 @@ function statusIconMarkup(status) {
   return "";
 }
 
+// Trailing chevron on an AwaitingFormatChoice row's clickable Status cell
+// (rotated by CSS while that row's unfold is open).
+const CHOOSE_CHEVRON_MARKUP =
+  '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
+
 // Small stroke icons for the unfold's `.uf-opt` entries.
 const UF_ICONS = {
   open: '<path d="M14 3h7v7"/><path d="M10 14L21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
@@ -177,7 +185,17 @@ function ufIconMarkup(name) {
   return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${UF_ICONS[name] ?? ""}</svg>`;
 }
 
-// Statuses that mean no further transfer will ever happen for this row.
+// Extract-job statuses that keep a live subprocess around and so can be
+// canceled; `Failed` is the only one that can be retried.
+const EXTRACT_CANCELABLE_STATUSES = ["Probing", "AwaitingFormatChoice", "Downloading"];
+
+// Extract-job statuses the backend's `remove_extract_job` command accepts
+// (mirrors `ExtractJobManager::remove`'s terminal-status check).
+const EXTRACT_TERMINAL_STATUSES = ["Completed", "Failed", "Canceled"];
+
+// Statuses (shared by downloads and extract jobs -- the strings happen to
+// match exactly) that mean no further transfer will ever happen for this
+// row.
 const TERMINAL_STATUSES = ["Completed", "Failed", "Canceled"];
 
 // Parses a speed-limit input's value into what the backend expects:
@@ -209,12 +227,27 @@ const DOWNLOAD_BADGE = {
   Failed: "Failed",
   Canceled: "Canceled",
 };
+const EXTRACT_BADGE = {
+  Probing: "Fetching info",
+  Downloading: "Downloading",
+  AwaitingFormatChoice: "Choose a quality",
+  Completed: "Completed",
+  Failed: "Failed",
+  Canceled: "Canceled",
+};
 
-// Rows are kept alive across polls, keyed by id, and only their contents
-// are updated in place. Rebuilding the whole list every poll could destroy
-// a button between mousedown and mouseup and silently lose the click, and
-// would wipe a half-typed speed limit.
+// Rows are kept alive across polls, keyed by `rowIdFor`'s id, and only
+// their contents are updated in place. Rebuilding the whole list every poll
+// could destroy a button between mousedown and mouseup and silently lose
+// the click, and would wipe a half-typed speed limit.
 const rowsById = new Map();
+
+// Extract-job rows are kept in `rowsById` alongside HTTP download rows,
+// keyed by this prefixed id so a yt-dlp job's uuid can never collide with
+// an HTTP download's.
+function rowIdFor(item) {
+  return item.kind === "extract" ? `x:${item.id}` : item.id;
+}
 
 function makeCell(className) {
   const el = document.createElement("span");
@@ -223,7 +256,7 @@ function makeCell(className) {
 }
 
 function createRow(item) {
-  const rowId = item.id;
+  const rowId = rowIdFor(item);
 
   const row = document.createElement("div");
   row.className = "trow";
@@ -282,8 +315,10 @@ function createRow(item) {
   });
   row.addEventListener("dblclick", () => {
     const current = els.currentItem;
-    if (!current || current.status !== "Completed" || !current.dest_path) return;
-    invoke("open_path_in_default_app", { path: current.dest_path }).catch((err) =>
+    if (!current || current.status !== "Completed") return;
+    const path = current.kind === "extract" ? current.final_path : current.dest_path;
+    if (!path) return;
+    invoke("open_path_in_default_app", { path }).catch((err) =>
       console.error("open_path_in_default_app failed:", err),
     );
   });
@@ -351,47 +386,89 @@ function confirmModal({ message, confirmLabel = "OK", cancelLabel = "Cancel", da
 // Removing a Completed entry asks whether to delete the finished file too;
 // only an explicit "OK" deletes it. Every other status just removes the
 // entry (the backend only ever cleans up its own partial files for those).
-async function removeItem(download) {
-  if (download.status === "Completed") {
+// Same choice for both kinds -- an extract job's finished file is just as
+// permanently gone once deleted as an HTTP download's.
+async function removeItem(item) {
+  const isExtract = item.kind === "extract";
+  const removeCmd = isExtract ? "remove_extract_job" : "remove_download";
+  const removeAndDeleteCmd = isExtract ? "remove_extract_job_and_delete_file" : "remove_download_and_delete_file";
+
+  if (item.status === "Completed") {
+    const name = isExtract ? item.title || item.source_url : item.filename;
     const deleteFile = await confirmModal({
-      message: `Delete the downloaded file "${download.filename}" too?`,
+      message: `Delete the downloaded file "${name}" too?`,
       confirmLabel: "Delete file",
       cancelLabel: "Keep file",
       danger: true,
     });
     if (deleteFile) {
-      await invoke("remove_download_and_delete_file", { id: download.id });
+      await invoke(removeAndDeleteCmd, { id: item.id });
       return;
     }
   }
-  await invoke("remove_download", { id: download.id });
+  await invoke(removeCmd, { id: item.id });
 }
 
-// Each entry is either `{ label, onClick, danger }` (an action link that
-// calls `invoke` and refreshes -- see `makeActionLink`).
-function actionsFor(download) {
+function actionsFor(item) {
+  return item.kind === "extract" ? actionsForExtract(item) : actionsForDownload(item);
+}
+
+// Each entry is either `{ kind: "invoke", label, onClick, danger }` (an
+// action link that calls `invoke` and refreshes -- see `makeActionLink`) or
+// `{ kind: "unfold", label }` (only opens/closes this row's unfold, never
+// calls `invoke` itself).
+function actionsForDownload(download) {
   const id = download.id;
   const actions = [];
   if (download.status === "Downloading") {
-    actions.push({ label: "Pause", onClick: () => invoke("pause_download", { id }) });
+    actions.push({ kind: "invoke", label: "Pause", onClick: () => invoke("pause_download", { id }) });
   }
   if (download.status === "Paused") {
-    actions.push({ label: "Resume", onClick: () => invoke("resume_download", { id }) });
+    actions.push({ kind: "invoke", label: "Resume", onClick: () => invoke("resume_download", { id }) });
   }
   if (download.status === "Failed") {
-    actions.push({ label: "Retry", onClick: () => invoke("retry_download", { id }) });
+    actions.push({ kind: "invoke", label: "Retry", onClick: () => invoke("retry_download", { id }) });
   }
   // The per-download speed limit is no longer a hover action -- it lives in
-  // the row's unfold (see `buildUnfoldContent`).
+  // the row's unfold (see `buildUnfoldContent`, same `limitable` rule).
   if (["Queued", "Downloading", "Paused"].includes(download.status)) {
-    actions.push({ label: "Cancel", onClick: () => invoke("cancel_download", { id }), danger: true });
+    actions.push({ kind: "invoke", label: "Cancel", onClick: () => invoke("cancel_download", { id }), danger: true });
   }
+  // Gated to terminal statuses, same as extract jobs' Remove
+  // (EXTRACT_TERMINAL_STATUSES) below.
   if (TERMINAL_STATUSES.includes(download.status)) {
     actions.push({
+      kind: "invoke",
       label: "Remove",
       onClick: () => removeItem(download),
       danger: download.status === "Failed",
     });
+  }
+  return actions;
+}
+
+// Extract jobs only ever get Cancel (while a subprocess could still be
+// running), Retry (once Failed), and Remove (once in any terminal status)
+// -- never Pause/Resume (yt-dlp can't be paused mid-probe/download) and
+// never a speed limit (no backend command exists for an extract job's
+// speed). `AwaitingFormatChoice` additionally gets "Choose", which only
+// opens this row's unfold on the quality picker: the Status cell's own
+// click-to-choose affordance is hidden while the row is hovered (CSS swaps
+// `.acts` in for `.c-status`), so this is the hover-time way to reach it.
+function actionsForExtract(job) {
+  const id = job.id;
+  const actions = [];
+  if (job.status === "AwaitingFormatChoice") {
+    actions.push({ kind: "unfold", label: "Choose", primary: true });
+  }
+  if (EXTRACT_CANCELABLE_STATUSES.includes(job.status)) {
+    actions.push({ kind: "invoke", label: "Cancel", onClick: () => invoke("cancel_extract_job", { id }), danger: true });
+  }
+  if (job.status === "Failed") {
+    actions.push({ kind: "invoke", label: "Retry", onClick: () => invoke("retry_extract_job", { id }) });
+  }
+  if (EXTRACT_TERMINAL_STATUSES.includes(job.status)) {
+    actions.push({ kind: "invoke", label: "Remove", onClick: () => removeItem(job) });
   }
   return actions;
 }
@@ -427,48 +504,63 @@ function makeUnfoldDivider() {
 // Right-click content for a row, grouped with a `.uf-div` divider between
 // each non-empty group: file actions (only once a real finished file
 // exists), copying the original source link, the row's own status action
-// (mirrors `actionsFor` above), then Remove. An empty group is never
-// included, so there's never a leading/trailing/doubled divider. Returns
-// an array of DOM elements.
+// (mirrors `actionsForDownload`/`actionsForExtract` above), then Remove. An
+// empty group is never included, so there's never a leading/trailing/
+// doubled divider. Returns an array of DOM elements.
 function contextMenuItemsFor(item) {
+  const isExtract = item.kind === "extract";
   const id = item.id;
-  const rowId = item.id;
+  const rowId = rowIdFor(item);
   const groups = [];
 
-  if (item.status === "Completed" && item.dest_path) {
+  const filePath = isExtract ? item.final_path : item.dest_path;
+  if (item.status === "Completed" && filePath) {
     groups.push([
-      { label: "Open file", icon: "open", onClick: () => invoke("open_path_in_default_app", { path: item.dest_path }) },
-      { label: "Open file location", icon: "folder", onClick: () => invoke("reveal_path_in_file_manager", { path: item.dest_path }) },
+      { label: "Open file", icon: "open", onClick: () => invoke("open_path_in_default_app", { path: filePath }) },
+      { label: "Open file location", icon: "folder", onClick: () => invoke("reveal_path_in_file_manager", { path: filePath }) },
     ]);
   }
 
-  if (item.url) {
+  const linkUrl = isExtract ? item.source_url : item.url;
+  if (linkUrl) {
     groups.push([
       {
         label: "Copy download link",
         icon: "link",
         skipRefresh: true,
-        onClick: () => navigator.clipboard.writeText(item.url),
+        onClick: () => navigator.clipboard.writeText(linkUrl),
       },
     ]);
   }
 
   const statusGroup = [];
-  if (item.status === "Downloading") {
-    statusGroup.push({ label: "Pause", icon: "pause", onClick: () => invoke("pause_download", { id }) });
-  }
-  if (item.status === "Paused") {
-    statusGroup.push({ label: "Resume", icon: "resume", onClick: () => invoke("resume_download", { id }) });
-  }
-  if (item.status === "Failed") {
-    statusGroup.push({ label: "Retry", icon: "retry", onClick: () => invoke("retry_download", { id }) });
-  }
-  if (["Queued", "Downloading", "Paused"].includes(item.status)) {
-    statusGroup.push({ label: "Cancel", icon: "cancel", danger: true, onClick: () => invoke("cancel_download", { id }) });
+  if (isExtract) {
+    if (item.status === "Failed") {
+      statusGroup.push({ label: "Retry", icon: "retry", onClick: () => invoke("retry_extract_job", { id }) });
+    }
+    if (EXTRACT_CANCELABLE_STATUSES.includes(item.status)) {
+      statusGroup.push({ label: "Cancel", icon: "cancel", danger: true, onClick: () => invoke("cancel_extract_job", { id }) });
+    }
+  } else {
+    if (item.status === "Downloading") {
+      statusGroup.push({ label: "Pause", icon: "pause", onClick: () => invoke("pause_download", { id }) });
+    }
+    if (item.status === "Paused") {
+      statusGroup.push({ label: "Resume", icon: "resume", onClick: () => invoke("resume_download", { id }) });
+    }
+    if (item.status === "Failed") {
+      statusGroup.push({ label: "Retry", icon: "retry", onClick: () => invoke("retry_download", { id }) });
+    }
+    if (["Queued", "Downloading", "Paused"].includes(item.status)) {
+      statusGroup.push({ label: "Cancel", icon: "cancel", danger: true, onClick: () => invoke("cancel_download", { id }) });
+    }
   }
   if (statusGroup.length) groups.push(statusGroup);
 
-  if (TERMINAL_STATUSES.includes(item.status)) {
+  const terminal = isExtract
+    ? EXTRACT_TERMINAL_STATUSES.includes(item.status)
+    : TERMINAL_STATUSES.includes(item.status);
+  if (terminal) {
     groups.push([
       {
         label: "Remove",
@@ -501,7 +593,7 @@ function makeErrorLine(text) {
 // `set_download_speed_limit` command. Starts as one `.uf-opt` row; clicking
 // it swaps that row in place for the `.uf-form` input + Set button.
 function makeSpeedLimitOption(download) {
-  const rowId = download.id;
+  const rowId = rowIdFor(download);
   const opt = document.createElement("button");
   opt.type = "button";
   opt.className = "uf-opt";
@@ -551,20 +643,66 @@ function makeSpeedLimitOption(download) {
   return opt;
 }
 
-// Everything a row's unfold shows, for its current item: the error line
-// (Failed only), the speed-limit option (every status except Completed/
-// Canceled), then the usual right-click entries.
+// The quality picker: a title plus one `.uf-opt` per offered format. One
+// click picks and starts via the existing `choose_extract_format` call.
+function makeQualityPicker(job) {
+  const rowId = rowIdFor(job);
+  const title = document.createElement("div");
+  title.className = "uf-title";
+  title.textContent = "Choose a quality";
+  const opts = job.formats.map((format) => {
+    const opt = document.createElement("button");
+    opt.type = "button";
+    opt.className = "uf-opt";
+    const label = document.createElement("span");
+    label.textContent = format.label;
+    opt.appendChild(label);
+    let busy = false;
+    opt.addEventListener("click", async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        await invoke("choose_extract_format", {
+          id: job.id,
+          formatLabel: format.label,
+        });
+        closeUnfold(rowId);
+        await refreshList();
+      } catch (err) {
+        console.error("choose_extract_format failed:", err);
+      } finally {
+        busy = false;
+      }
+    });
+    return opt;
+  });
+  return [title, ...opts];
+}
+
+// Everything a row's unfold shows, for its current item:
+//  - an extract job awaiting a format choice: the quality picker first,
+//    then (after a divider) the usual right-click entries;
+//  - otherwise: the error line (Failed only), the speed-limit option
+//    (downloads with today's `limitable` rule: every status except
+//    Completed/Canceled), then the usual right-click entries.
 function buildUnfoldContent(item) {
   const menuItems = contextMenuItemsFor(item);
+
+  if (item.kind === "extract" && item.status === "AwaitingFormatChoice") {
+    const picker = makeQualityPicker(item);
+    return menuItems.length ? [...picker, makeUnfoldDivider(), ...menuItems] : picker;
+  }
 
   const content = [];
   if (item.status === "Failed") {
     content.push(makeErrorLine(item.error || "Failed"));
   }
-  const limitable = !["Completed", "Canceled"].includes(item.status);
-  if (limitable) {
-    content.push(makeSpeedLimitOption(item));
-    if (menuItems.length) content.push(makeUnfoldDivider());
+  if (item.kind !== "extract") {
+    const limitable = !["Completed", "Canceled"].includes(item.status);
+    if (limitable) {
+      content.push(makeSpeedLimitOption(item));
+      if (menuItems.length) content.push(makeUnfoldDivider());
+    }
   }
   content.push(...menuItems);
   return content;
@@ -594,6 +732,15 @@ function openUnfold(rowId, contentEls) {
   openUnfoldIds.add(rowId);
 }
 
+function toggleUnfold(rowId) {
+  if (openUnfoldIds.has(rowId)) {
+    closeUnfold(rowId);
+    return;
+  }
+  const current = rowsById.get(rowId)?.currentItem;
+  if (current) openUnfold(rowId, buildUnfoldContent(current));
+}
+
 // Closes an open unfold on an ordinary left-click or a right-click landing
 // outside both it and its row, and on Escape. Uses `composedPath()` (fixed
 // at dispatch time) rather than `contains(event.target)`, because a click
@@ -615,13 +762,15 @@ document.addEventListener("keydown", (event) => {
 function updateRow(els, item) {
   // Kept fresh on every poll so the row's `contextmenu`/`dblclick`
   // listeners (bound once, in `createRow`) always act on current data --
-  // status, `dest_path`, `url` -- not whatever the row happened to show
-  // when it was first created.
+  // status, `dest_path`/`final_path`, `url`/`source_url` -- not whatever
+  // the row happened to show when it was first created.
   els.currentItem = item;
 
-  if (els.cName.textContent !== item.filename) {
-    els.cName.textContent = item.filename;
-    els.cName.title = item.filename;
+  const isExtract = item.kind === "extract";
+  const nameText = isExtract ? item.title || item.source_url : item.filename;
+  if (els.cName.textContent !== nameText) {
+    els.cName.textContent = nameText;
+    els.cName.title = nameText;
   }
 
   const sizeText = sizeCellText(item);
@@ -631,8 +780,12 @@ function updateRow(els, item) {
   if (els.cDate.textContent !== dateText) els.cDate.textContent = dateText;
 
   updateProgressCell(els, item);
-  updateStatusCell(els, item, DOWNLOAD_BADGE[item.status] ?? "");
-  updateActions(els, item, `${item.status}|${item.filename}`);
+
+  if (isExtract) {
+    updateExtractRow(els, item);
+  } else {
+    updateDownloadRow(els, item);
+  }
 }
 
 // Progress cell: a `.bar > .fill` plus a `.pct` label while Downloading
@@ -669,17 +822,26 @@ function updateProgressCell(els, item) {
 }
 
 // Status cell: the plain status word, with a leading icon for Completed/
-// Failed/Paused. Rebuilt only when the status changes. The raw error text
-// never shows here -- only in the unfold.
+// Failed/Paused. An AwaitingFormatChoice row's cell becomes clickable
+// (`.choose` + chevron) and opens the quality picker. Rebuilt only when the
+// status changes. The raw error text never shows here -- only in the unfold.
 function updateStatusCell(els, item, word) {
   if (els.statusKey === item.status) return;
   els.statusKey = item.status;
 
+  const choose = item.kind === "extract" && item.status === "AwaitingFormatChoice";
   els.cStatus.classList.toggle("failed", item.status === "Failed");
+  els.cStatus.classList.toggle("choose", choose);
   els.cStatus.innerHTML = statusIconMarkup(item.status);
   const wordEl = document.createElement("span");
   wordEl.textContent = word;
   els.cStatus.appendChild(wordEl);
+  if (choose) {
+    els.cStatus.insertAdjacentHTML("beforeend", CHOOSE_CHEVRON_MARKUP);
+    els.cStatus.onclick = () => toggleUnfold(els.rowId);
+  } else {
+    els.cStatus.onclick = null;
+  }
 }
 
 // Hover action links only change when the status does, so they are only
@@ -690,8 +852,18 @@ function updateActions(els, item, actionsKey) {
   if (els.actionsKey === actionsKey) return;
   const firstBuild = els.actionsKey === null;
   els.actionsKey = actionsKey;
-  els.acts.replaceChildren(...actionsFor(item).map((action) => makeActionLink(action.label, action.onClick, action.danger)));
+  els.acts.replaceChildren(...actionsFor(item).map((action) => buildActionLink(els, action)));
   if (!firstBuild && openUnfoldIds.has(els.rowId)) closeUnfold(els.rowId);
+}
+
+function updateDownloadRow(els, download) {
+  updateStatusCell(els, download, DOWNLOAD_BADGE[download.status] ?? "");
+  updateActions(els, download, `${download.status}|${download.filename}`);
+}
+
+function updateExtractRow(els, job) {
+  updateStatusCell(els, job, EXTRACT_BADGE[job.status] ?? "");
+  updateActions(els, job, `${job.status}|${job.title}`);
 }
 
 function makeActionLink(label, onClick, danger) {
@@ -715,10 +887,24 @@ function makeActionLink(label, onClick, danger) {
   return link;
 }
 
-// Last-known-good list, used so a transient `list_downloads` failure
-// leaves the rows exactly as they were on screen instead of the poll
-// silently emptying them.
+function buildActionLink(els, action) {
+  if (action.kind === "unfold") {
+    const link = document.createElement("button");
+    link.type = "button";
+    if (action.primary) link.className = "primary";
+    link.textContent = action.label;
+    link.addEventListener("click", () => toggleUnfold(els.rowId));
+    return link;
+  }
+  return makeActionLink(action.label, action.onClick, action.danger);
+}
+
+// Last-known-good lists, used so a transient failure of one `invoke` call
+// below leaves that kind's rows exactly as they were on screen instead of
+// the merged `items` list silently omitting that kind and the prune loop
+// deleting every one of its rows for a single missed poll.
 let lastDownloads = [];
+let lastExtractJobs = [];
 
 async function refreshList() {
   let downloads = lastDownloads;
@@ -729,14 +915,27 @@ async function refreshList() {
     console.error("Failed to list downloads:", err);
   }
 
-  const isEmpty = downloads.length === 0;
+  let extractJobs = lastExtractJobs;
+  try {
+    extractJobs = (await invoke("list_extract_jobs")) || [];
+    lastExtractJobs = extractJobs;
+  } catch (err) {
+    console.error("Failed to list extract jobs:", err);
+  }
+
+  const items = [
+    ...downloads.map((download) => ({ ...download, kind: "http" })),
+    ...extractJobs.map((job) => ({ ...job, kind: "extract" })),
+  ];
+
+  const isEmpty = items.length === 0;
   emptyStateEl.classList.toggle("hidden", !isEmpty);
   queueListEl.classList.toggle("hidden", isEmpty);
 
   const seen = new Set();
   let previous = null;
-  for (const item of downloads) {
-    const rowId = item.id;
+  for (const item of items) {
+    const rowId = rowIdFor(item);
     seen.add(rowId);
     let els = rowsById.get(rowId);
     if (!els) {
@@ -768,7 +967,7 @@ async function refreshList() {
     }
   }
 
-  updateStatusBar(downloads);
+  updateStatusBar(items);
 }
 
 // Status bar: "<N> item(s)", then "— <M> active, <speed>/s" while anything
@@ -784,7 +983,7 @@ function updateStatusBar(items) {
   for (const item of items) {
     if (item.status !== "Downloading") continue;
     activeCount += 1;
-    combinedSpeed += rowsById.get(item.id)?.speedLast ?? 0;
+    combinedSpeed += rowsById.get(rowIdFor(item))?.speedLast ?? 0;
   }
   statusWorkingEl.textContent =
     activeCount > 0 ? `— ${activeCount} active, ${formatBytes(combinedSpeed)}/s` : "";
@@ -1020,6 +1219,8 @@ function setStatus(el, message, isError) {
 // Settings page's controls, then swaps to that page.
 shedBtn.addEventListener("click", async () => {
   hideError(settingsErrorEl);
+  ytdlpUpdateStatusEl.textContent = "";
+  ytdlpUpdateStatusEl.classList.remove("error");
   try {
     const settings = await invoke("get_settings");
     currentSettings = settings;
@@ -1094,6 +1295,21 @@ commitOnBlurOrEnter(settingsSpeedLimitEl, async () => {
 // point (see the handlers above), so Close just navigates back.
 document.getElementById("settings-close-btn").addEventListener("click", () => {
   showPage(ledgerPageEl);
+});
+
+checkYtdlpUpdateBtn.addEventListener("click", async () => {
+  checkYtdlpUpdateBtn.disabled = true;
+  ytdlpUpdateStatusEl.classList.remove("error");
+  ytdlpUpdateStatusEl.textContent = "Checking…";
+  try {
+    const message = await invoke("check_ytdlp_update");
+    ytdlpUpdateStatusEl.textContent = message;
+  } catch (err) {
+    ytdlpUpdateStatusEl.textContent = String(err);
+    ytdlpUpdateStatusEl.classList.add("error");
+  } finally {
+    checkYtdlpUpdateBtn.disabled = false;
+  }
 });
 
 // Settings' "Setup guide" link opens the Browser setup page; its Close and

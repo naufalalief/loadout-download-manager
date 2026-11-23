@@ -3,8 +3,9 @@
 //! Lets an external, local-only client (e.g. a browser extension) pair with
 //! this app -- via a random token persisted to disk over `/pair` -- and then
 //! hand off download requests to the same `QueueManager` the Tauri UI itself
-//! uses, via `/downloads`. More than one client (e.g. one per Chrome
-//! profile) can be paired at once -- see [`PairingState`].
+//! uses, via `/downloads`, or a yt-dlp extraction job via `/extract`. More
+//! than one client (e.g. one per Chrome profile) can be paired at once --
+//! see [`PairingState`].
 //!
 //! Bound to `127.0.0.1` only (see [`serve`]): this is a local handoff
 //! mechanism, never meant to be reachable from the network. Every request
@@ -31,6 +32,7 @@ use uuid::Uuid;
 
 use crate::download::queue::QueueManager;
 use crate::download::types::DownloadRequest;
+use crate::extract::jobs::ExtractJobManager;
 
 /// Fixed local port the handoff server listens on.
 pub const HANDOFF_PORT: u16 = 57431;
@@ -305,6 +307,7 @@ fn now_unix() -> u64 {
 struct AppState {
     queue: Arc<QueueManager>,
     pairing: Arc<PairingState>,
+    extract_jobs: Arc<ExtractJobManager>,
 }
 
 /// Body of a `POST /downloads` request. Mirrors [`DownloadRequest`] exactly
@@ -488,6 +491,50 @@ async fn add_download(
     (StatusCode::CREATED, Json(DownloadResponse { id })).into_response()
 }
 
+/// Body of a `POST /extract` request: the page URL to probe with `yt-dlp`,
+/// plus whatever headers (`Cookie`/`Referer`/`User-Agent`) the caller
+/// captured for it.
+#[derive(Deserialize)]
+struct ExtractRequestBody {
+    url: String,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct ExtractResponse {
+    id: String,
+}
+
+/// `POST /extract`: same auth/validation as [`add_download`] -- a valid
+/// `X-Dm-Token` header (else `401`) and a `url` that parses as `http://` or
+/// `https://` (else `400`, see [`url_scheme_is_http_or_https`]; neither
+/// check ever starts a probe) -- then starts probing `body.url` via
+/// `ExtractJobManager::probe` and returns `201` with the new job's id.
+async fn extract(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ExtractRequestBody>,
+) -> impl IntoResponse {
+    let token_matches = headers
+        .get(TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| state.pairing.is_token_valid(value))
+        .unwrap_or(false);
+
+    if !token_matches {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    if !url_scheme_is_http_or_https(&body.url) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let id = state.extract_jobs.probe(body.url, body.headers);
+
+    (StatusCode::CREATED, Json(ExtractResponse { id })).into_response()
+}
+
 /// Rejects (`403`) any request whose `Host` header isn't exactly one of
 /// `allowed` -- before any route handler runs.
 async fn require_loopback_host(
@@ -511,19 +558,32 @@ async fn require_loopback_host(
 
 /// Builds the handoff server's `axum::Router` for the real
 /// [`HANDOFF_PORT`]. See [`router_for_port`].
-pub fn router(queue: Arc<QueueManager>, pairing: Arc<PairingState>) -> Router {
-    router_for_port(queue, pairing, HANDOFF_PORT)
+pub fn router(
+    queue: Arc<QueueManager>,
+    pairing: Arc<PairingState>,
+    extract_jobs: Arc<ExtractJobManager>,
+) -> Router {
+    router_for_port(queue, pairing, extract_jobs, HANDOFF_PORT)
 }
 
-/// Builds the handoff server's `axum::Router`, wired to `queue` and
-/// `pairing`, accepting only requests whose `Host` header is
+/// Builds the handoff server's `axum::Router`, wired to `queue`, `pairing`,
+/// and `extract_jobs`, accepting only requests whose `Host` header is
 /// `127.0.0.1:<port>` or `localhost:<port>` (on every route, `/ping`
 /// included -- the extension always addresses the server that way, and
 /// nothing else has a legitimate reason to talk to it). Exposed separately
 /// from [`serve`] (and parameterized by port) so tests can run it on an
 /// ephemeral port.
-pub fn router_for_port(queue: Arc<QueueManager>, pairing: Arc<PairingState>, port: u16) -> Router {
-    let state = AppState { queue, pairing };
+pub fn router_for_port(
+    queue: Arc<QueueManager>,
+    pairing: Arc<PairingState>,
+    extract_jobs: Arc<ExtractJobManager>,
+    port: u16,
+) -> Router {
+    let state = AppState {
+        queue,
+        pairing,
+        extract_jobs,
+    };
     let allowed_hosts = Arc::new(vec![
         format!("127.0.0.1:{port}"),
         format!("localhost:{port}"),
@@ -534,6 +594,7 @@ pub fn router_for_port(queue: Arc<QueueManager>, pairing: Arc<PairingState>, por
         .route("/pair", post(pair))
         .route("/unpair", post(unpair))
         .route("/downloads", post(add_download))
+        .route("/extract", post(extract))
         .with_state(state)
         .layer(middleware::from_fn_with_state(
             allowed_hosts,
@@ -545,8 +606,12 @@ pub fn router_for_port(queue: Arc<QueueManager>, pairing: Arc<PairingState>, por
 /// until the bind itself fails, which is logged and returned from rather
 /// than panicking -- a background task failing to bind, e.g. because the
 /// port is already in use, must not take the rest of the app down with it).
-pub async fn serve(queue: Arc<QueueManager>, pairing: Arc<PairingState>) {
-    let app = router(queue, pairing);
+pub async fn serve(
+    queue: Arc<QueueManager>,
+    pairing: Arc<PairingState>,
+    extract_jobs: Arc<ExtractJobManager>,
+) {
+    let app = router(queue, pairing, extract_jobs);
 
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", HANDOFF_PORT)).await {
         Ok(listener) => listener,
