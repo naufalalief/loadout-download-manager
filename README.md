@@ -7,6 +7,9 @@ A self-hosted download manager for Windows — multi-segment downloads, a browse
 ![Rust](https://img.shields.io/badge/Rust-1.90%2B-orange?logo=rust)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri)
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+[![Latest release](https://img.shields.io/github/v/release/naufalalief/loadout-download-manager?label=release)](https://github.com/naufalalief/loadout-download-manager/releases/latest)
+
+### [⬇️ Download Loadout for Windows](https://github.com/naufalalief/loadout-download-manager/releases/latest)
 
 <!-- TODO: add a screenshot or short GIF of the queue view here, e.g. docs/screenshot.png -->
 
@@ -40,14 +43,19 @@ This is a personal hobby project, provided as-is with no warranty (see [LICENSE]
 
 ## 🚀 Getting Started
 
-### Prerequisites
+### Install (recommended)
 
-- **Windows 10/11** (the only platform currently targeted)
-- **[Rust](https://rustup.rs/)** 1.90 or newer
-- **[Tauri CLI](https://v2.tauri.app/reference/cli/)** for building an installer — `cargo install tauri-cli` (optional for just running in dev mode)
-- **Node.js or Deno** on your `PATH` — not required to build the app, but `yt-dlp` needs a JS runtime to solve YouTube's signature challenge; without one, video extraction will fail with only low-res/image formats available
+1. Grab the installer from the [**latest release**](https://github.com/naufalalief/loadout-download-manager/releases/latest) — `Loadout_<version>_x64-setup.exe`.
+2. Run it. Windows 10/11 only.
+3. Launch Loadout — it starts in the system tray and opens its window on first run.
 
-### Installation
+`yt-dlp` and `ffmpeg` are **not** bundled with the installer — they're downloaded automatically into the app's data directory the first time you use the hover-to-download feature. A Node.js or Deno runtime on your `PATH` is recommended for that step: `yt-dlp` needs one to solve YouTube's signature challenge, and without it video extraction will fail with only low-res/image formats available.
+
+### Build from source (optional)
+
+Only needed if you want to run a dev build or build the installer yourself.
+
+**Prerequisites:** Windows 10/11, [Rust](https://rustup.rs/) 1.90+, and the [Tauri CLI](https://v2.tauri.app/reference/cli/) (`cargo install tauri-cli`).
 
 ```bash
 git clone https://github.com/naufalalief/loadout-download-manager.git
@@ -61,8 +69,6 @@ cargo tauri build
 ```
 
 The release installer is written to `src-tauri/target/release/bundle/nsis/`.
-
-`yt-dlp` and `ffmpeg` are **not** bundled with the app — they're downloaded automatically into the app's data directory the first time you use the hover-to-download feature.
 
 ### Installing the browser extension
 
