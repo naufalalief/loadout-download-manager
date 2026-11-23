@@ -1,0 +1,9 @@
+/target/
+/src-tauri/target/
+/src-tauri/target-test/
+/src-tauri/gen/schemas/
+.DS_Store
+Thumbs.db
+
+/loadout-rebuild-plan.md
+/loadout-pr-archive.md
