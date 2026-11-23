@@ -6,12 +6,14 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use loadout::download::queue::QueueManager;
 use loadout::download::types::{DownloadInfo, DownloadRequest};
 use loadout::extract::binaries::BinaryManager;
 use loadout::extract::jobs::{ExtractJobInfo, ExtractJobManager};
 use loadout::server::{PAIRING_MODE_DURATION, PairedProfileInfo, PairingState};
+use reqwest::header::{CONTENT_TYPE, RANGE, USER_AGENT};
 use tauri::{Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
@@ -40,6 +42,109 @@ pub fn add_download(
         headers: HashMap::new(),
     };
     Ok(queue.add(req))
+}
+
+/// A real browser UA string, not this app's own -- several file-hosting
+/// pages (pixeldrain, Google Drive, gofile, ...) serve a different (or no)
+/// response to a request that doesn't look like a browser.
+const SNIFF_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+/// Short: this only gates which of two already-fast paths `smart_add`
+/// takes, so a slow/unresponsive server should fall through to a decision
+/// quickly rather than make pasting a link feel stuck.
+const SNIFF_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// Whether a response's `Content-Type` is present and starts with
+/// `text/html` -- `None` means "don't know" (header missing or not valid
+/// UTF-8), distinct from `Some(false)` ("known, and it's not HTML"), so the
+/// caller can tell "confirmed not a page" apart from "couldn't tell".
+fn is_html_content_type(response: &reqwest::Response) -> Option<bool> {
+    response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.to_ascii_lowercase().starts_with("text/html"))
+}
+
+/// Whether `url` looks like a page (needs `yt-dlp` extraction) rather than
+/// a directly downloadable file -- its `Content-Type` starting with
+/// `text/html`, same signal a browser itself uses to render a page instead
+/// of offering a download.
+///
+/// Tries a `HEAD` request first; if that doesn't yield a usable
+/// `Content-Type` -- the server rejects `HEAD` outright (`405`/`501`), or
+/// (seen in the wild from pixeldrain's page: a `200` with no `Content-Type`
+/// header at all) answers but omits it -- falls back to a ranged `GET`
+/// (`Range: bytes=0-0`), which every site tested in developing this
+/// actually sets it on.
+///
+/// Defaults to "looks like a page" (`true`) whenever neither attempt
+/// resolves it -- a probe failure, a timeout, or both responses missing
+/// `Content-Type`. `yt-dlp` fails a genuinely unsupported URL with a clear
+/// "unsupported URL" error on the resulting extract-job row; treating an
+/// ambiguous response as a direct file instead would just queue a doomed
+/// download of whatever bytes that response happened to contain.
+async fn looks_like_html_page(client: &reqwest::Client, url: &str) -> bool {
+    let head = client
+        .head(url)
+        .header(USER_AGENT, SNIFF_USER_AGENT)
+        .timeout(SNIFF_TIMEOUT)
+        .send()
+        .await;
+
+    if let Ok(response) = head {
+        if let Some(is_html) = is_html_content_type(&response) {
+            return is_html;
+        }
+    }
+
+    let ranged = client
+        .get(url)
+        .header(USER_AGENT, SNIFF_USER_AGENT)
+        .header(RANGE, "bytes=0-0")
+        .timeout(SNIFF_TIMEOUT)
+        .send()
+        .await;
+
+    match ranged {
+        Ok(response) => is_html_content_type(&response).unwrap_or(true),
+        Err(_) => true,
+    }
+}
+
+/// Backs the addbar's "paste a link, press enter": unlike `add_download`
+/// (always a direct file), this works for anything the browser extension's
+/// hover-to-download button does too -- YouTube/Vimeo/etc., but also
+/// non-video file-hosting pages like pixeldrain, Google Drive, or gofile,
+/// since `yt-dlp` has extractors for those as well, not just video sites.
+///
+/// Sniffs `url` first (see `looks_like_html_page`) and routes to whichever
+/// of the two already-existing paths fits: a direct file goes straight to
+/// `QueueManager::add` (the fast, resumable multi-segment downloader); a
+/// page goes to `ExtractJobManager::probe`, the same call the local
+/// server's `/extract` route makes for the extension's hover button.
+/// Returns the new download's or extract job's id.
+#[tauri::command]
+pub async fn smart_add(
+    url: String,
+    queue: State<'_, Arc<QueueManager>>,
+    extract_jobs: State<'_, Arc<ExtractJobManager>>,
+) -> Result<String, String> {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("URL must not be empty".to_string());
+    }
+
+    let client = reqwest::Client::new();
+    if looks_like_html_page(&client, &url).await {
+        Ok(extract_jobs.probe(url, HashMap::new()))
+    } else {
+        Ok(queue.add(DownloadRequest {
+            url,
+            filename: None,
+            headers: HashMap::new(),
+        }))
+    }
 }
 
 /// Returns the current snapshot of every tracked download.

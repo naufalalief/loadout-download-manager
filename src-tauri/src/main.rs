@@ -118,6 +118,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::add_download,
+            commands::smart_add,
             commands::list_downloads,
             commands::pause_download,
             commands::resume_download,
