@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use loadout::download::queue::QueueManager;
 use loadout::download::types::{DownloadInfo, DownloadRequest};
-use tauri::State;
+use loadout::server::{PAIRING_MODE_DURATION, PairedProfileInfo, PairingState};
+use tauri::{Manager, State};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -163,4 +165,102 @@ pub fn open_path_in_default_app(app: tauri::AppHandle, path: String) -> Result<(
 #[tauri::command]
 pub fn reveal_path_in_file_manager(app: tauri::AppHandle, path: String) -> Result<(), String> {
     app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+}
+
+/// Writes `chrome://extensions` to the OS clipboard, for the Browser
+/// Companion Setup Guide's "OPEN PAGE" step.
+///
+/// This is deliberately clipboard-only. `chrome://extensions` has no
+/// registered OS-level protocol handler on a typical system, so attempting
+/// to open it via `tauri-plugin-opener`'s `Opener::open_url` is very likely
+/// to trigger the OS's own "choose an app" dialog (on Windows,
+/// `ShellExecuteExW`'s app-picker) instead of actually doing anything
+/// useful -- and nothing in this environment has a real display to confirm
+/// which approach actually works. Rather than pop that dialog on every use,
+/// this command never calls `open_url` at all: it always writes the URL to
+/// the clipboard via `tauri-plugin-clipboard-manager`'s
+/// `Clipboard::write_text` and returns a confirmation string that
+/// accurately describes only that, with no mention of "opening" or the
+/// browser doing something automatically. The clipboard write's own
+/// failure is the only real error case, surfaced as `Err`.
+#[tauri::command]
+pub async fn open_extensions_page(app: tauri::AppHandle) -> Result<String, String> {
+    const EXTENSIONS_URL: &str = "chrome://extensions";
+
+    app.clipboard()
+        .write_text(EXTENSIONS_URL)
+        .map(|_| {
+            "Copied chrome://extensions — paste it into your browser's address bar.".to_string()
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Resolves the bundled `extension/` folder (packaged as an installer
+/// resource -- see `tauri.conf.json`'s `bundle.resources`) and opens it in
+/// the OS file explorer, for the Browser Companion Setup Guide's
+/// "OPEN FOLDER" step.
+#[tauri::command]
+pub fn open_extension_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let folder = app
+        .path()
+        .resolve("extension", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| e.to_string())?;
+
+    app.opener()
+        .open_path(folder.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Returns the Settings panel's "PAIRED BROWSERS" list.
+#[tauri::command]
+pub fn list_paired_profiles(pairing: State<Arc<PairingState>>) -> Vec<PairedProfileInfo> {
+    pairing.list()
+}
+
+/// Backs the Settings panel's "ALLOW NEW PAIRING" button: opens `/pair`
+/// back up for `PAIRING_MODE_DURATION` and returns that duration (in
+/// seconds) so the frontend's countdown starts from the same number this
+/// actually used, rather than a second copy of the constant.
+#[tauri::command]
+pub fn allow_new_pairing(pairing: State<Arc<PairingState>>) -> u64 {
+    pairing.allow_new_pairing(PAIRING_MODE_DURATION);
+    PAIRING_MODE_DURATION.as_secs()
+}
+
+/// How many seconds pairing mode has left, or `None` if it's closed --
+/// read when the Settings panel opens, so a live countdown already in
+/// progress (started from an earlier visit to the panel) resumes showing
+/// the right remaining time instead of silently resetting.
+#[tauri::command]
+pub fn pairing_mode_remaining_seconds(pairing: State<Arc<PairingState>>) -> Option<u64> {
+    pairing.pairing_mode_remaining().map(|d| d.as_secs())
+}
+
+/// Removes one paired profile by id (the Settings panel's per-row FORGET
+/// button) -- the browser itself still holds its now-invalid token until
+/// it next tries to use it, exactly like the extension's own "Forget
+/// Pairing"/`\/unpair` already works, just triggered from the app side
+/// instead.
+#[tauri::command]
+pub fn forget_paired_profile(id: String, pairing: State<Arc<PairingState>>) -> Result<(), String> {
+    if pairing.forget_by_id(&id) {
+        Ok(())
+    } else {
+        Err(format!("no paired profile with id '{id}'"))
+    }
+}
+
+/// Renames one paired profile (the Settings panel's per-row label field) --
+/// cosmetic only, never affects the token or what it's allowed to do.
+#[tauri::command]
+pub fn rename_paired_profile(
+    id: String,
+    label: String,
+    pairing: State<Arc<PairingState>>,
+) -> Result<(), String> {
+    if pairing.rename(&id, &label) {
+        Ok(())
+    } else {
+        Err(format!("no paired profile with id '{id}'"))
+    }
 }

@@ -103,8 +103,8 @@ input, textarea { user-select: text; }
 .unfold .uf-form button:hover { background: var(--chrome); }
 
 /* Page wrappers: flex-column ancestor that .header/.body/.footer/.tbody/.tbody-empty rely on */
-#ledger-page, #settings-page { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-#ledger-page.hidden, #settings-page.hidden { display: none; }
+#ledger-page, #settings-page, #browser-setup-page { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#ledger-page.hidden, #settings-page.hidden, #browser-setup-page.hidden { display: none; }
 
 /* Settings page chrome */
 .header { height: 34px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; background: var(--chrome); border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 600; }
@@ -119,10 +119,13 @@ input, textarea { user-select: text; }
 .body::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 .footer { height: 36px; flex-shrink: 0; display: flex; align-items: center; padding: 0 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted); }
 #settings-page .footer { justify-content: space-between; }
+#browser-setup-page .footer { justify-content: flex-end; height: 44px; }
 .btn { height: 26px; padding: 0 12px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; color: var(--text); background: var(--bg); cursor: pointer; font-family: inherit; white-space: nowrap; }
 .btn:hover { background: var(--chrome); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { filter: brightness(0.95); }
+.link { all: unset; font-size: 12px; color: var(--accent); cursor: pointer; }
+.link:hover { text-decoration: underline; }
 
 /* Settings body */
 .section { margin-bottom: 22px; }
@@ -132,11 +135,37 @@ input, textarea { user-select: text; }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--border); }
 .section .rows .row:last-child { border-bottom: none; }
 .row .t { min-width: 0; flex: 1; }
-.row .t .l { font-size: 12.5px; color: var(--text); }
-.row .t .d { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.row .t .l,
+.row .slabel { font-size: 12.5px; color: var(--text); }
+.row .t .d,
+.row .ssub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 .row .ctl { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+/* Quiet caption under a section's card -- e.g. the paired-browsers count --
+   deliberately outside .rows so it doesn't read as another list item. */
+.sectionfoot { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); margin: 8px 2px 0; }
 .pathval { font-size: 11.5px; color: var(--text-muted); max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: none; background: none; text-align: right; }
 .smallinput { height: 26px; width: 80px; padding: 0 8px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; color: var(--text); background: var(--bg); text-align: right; font-family: inherit; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
+.dot.off { background: var(--text-muted); }
+.profilelist { margin-top: 6px; }
+.prow { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; }
+.prow + .prow { border-top: 1px solid var(--border); }
+.prow .pname { font-size: 12px; color: var(--text); }
+.prow .pdate { font-size: 11px; color: var(--text-muted); margin-left: 6px; }
+.prow .unpair { all: unset; font-size: 11.5px; color: var(--text-muted); cursor: pointer; visibility: hidden; }
+.prow:hover .unpair, .prow:focus-within .unpair { visibility: visible; color: var(--danger); }
+
+/* Browser-setup body */
+.intro { font-size: 12.5px; color: var(--text-muted); margin-bottom: 18px; line-height: 1.5; max-width: 420px; }
+.step { display: flex; gap: 12px; padding: 14px 0; border-top: 1px solid var(--border); }
+.step:first-child { border-top: none; }
+.num { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--border); flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+.stepbody .t { font-size: 12.5px; color: var(--text); margin-bottom: 3px; }
+.stepbody .d { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+.pathbit { font-family: ui-monospace, "Cascadia Code", "Consolas", monospace; font-size: 11px; background: var(--chrome); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; }
+
+/* Shared neutral status-text idiom, used by #setup-page-status/#allow-pairing-status */
+.ssub.error { color: var(--danger); }
 
 /* Shared error/hidden utilities */
 .hidden { display: none; }
