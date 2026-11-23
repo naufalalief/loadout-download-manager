@@ -1007,7 +1007,10 @@ addFormEl.addEventListener("submit", async (event) => {
   const url = addUrlEl.value.trim();
 
   try {
-    await invoke("add_download", { url });
+    // Routes to a direct download or a yt-dlp extraction (YouTube, Vimeo,
+    // pixeldrain, Google Drive, gofile, ...) depending on what `url` turns
+    // out to be -- see `smart_add`'s doc comment.
+    await invoke("smart_add", { url });
     addUrlEl.value = "";
     await refreshList();
   } catch (err) {
