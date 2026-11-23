@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loadout</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="win">
+      <div id="ledger-page">
+        <form id="add-form" class="addbar" autocomplete="off">
+          <svg id="addbar-icon" width="14" height="14" viewBox="0 0 24 24"></svg>
+          <input
+            id="add-url"
+            type="text"
+            class="addfield"
+            placeholder="Paste a link, press enter"
+            autocomplete="off"
+            required
+          />
+          <button type="button" class="settingsbtn" id="shedbtn" title="Settings">
+            <svg id="shedbtn-icon" width="17" height="17" viewBox="0 0 24 24"></svg>
+          </button>
+        </form>
+
+        <p id="add-error" class="error hidden"></p>
+
+        <div class="thead">
+          <span class="c-name">Name</span>
+          <span class="c-progress">Progress</span>
+          <span class="c-size">Size</span>
+          <span class="c-status">Status</span>
+          <span class="c-date">Added</span>
+        </div>
+
+        <div id="empty-state" class="tbody-empty hidden">
+          <div class="emptymsg">
+            <svg id="empty-state-icon" width="46" height="46" viewBox="0 0 24 24"></svg>
+            <div class="h">No downloads yet</div>
+            <div class="sub">Paste a link above to get started.</div>
+          </div>
+        </div>
+
+        <div id="queue-list" class="tbody hidden"></div>
+      </div>
+
+      <div id="settings-page" class="hidden">
+        <div class="header">
+          <span>Settings</span>
+          <button type="button" class="close" id="settings-close-btn">Close</button>
+        </div>
+        <div class="body">
+          <div class="section">
+            <div class="h">Transfers</div>
+            <div class="rows">
+              <div class="row">
+                <div class="t">
+                  <div class="l">Download folder</div>
+                  <div class="d">Where finished downloads are saved</div>
+                </div>
+                <div class="ctl">
+                  <input id="settings-download-dir" type="text" class="pathval" autocomplete="off" readonly />
+                  <button type="button" id="settings-browse-download-dir" class="btn">Change</button>
+                </div>
+              </div>
+              <div class="row">
+                <div class="t">
+                  <div class="l">Downloads at once</div>
+                  <div class="d">Max simultaneous downloads</div>
+                </div>
+                <div class="ctl">
+                  <input id="settings-max-concurrent" type="number" class="smallinput" min="1" step="1" autocomplete="off" required />
+                </div>
+              </div>
+              <div class="row">
+                <div class="t">
+                  <div class="l">Speed limit</div>
+                  <div class="d">Default speed limit, bytes/sec (0 = no limit)</div>
+                </div>
+                <div class="ctl">
+                  <input
+                    id="settings-speed-limit"
+                    type="text"
+                    inputmode="numeric"
+                    class="smallinput"
+                    placeholder="No limit"
+                    autocomplete="off"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p id="settings-error" class="error hidden"></p>
+        </div>
+        <div class="footer">
+          <span>Loadout</span>
+        </div>
+      </div>
+
+      <div class="statusbar">
+        <span id="status-tasks">0 items</span>
+        <span id="status-working"></span>
+      </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
