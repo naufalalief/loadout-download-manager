@@ -1,0 +1,154 @@
+:root {
+  --bg: #ffffff;
+  --chrome: #f3f3f3;
+  --zebra: #f7f8fa;
+  --border: #e2e2e4;
+  --text: #1a1a1a;
+  --text-muted: #6e6e6e;
+  --accent: #0067c0;
+  --danger: #c42b1c;
+  --ok: #107c10;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+}
+html, body { margin: 0; font-family: var(--font-ui); height: 100%; user-select: none; }
+* { box-sizing: border-box; }
+input, textarea { user-select: text; }
+
+.win {
+  width: 100%; height: 100vh; box-sizing: border-box;
+  background: var(--bg); color: var(--text);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* Addbar (persistent, always visible on the ledger page) */
+.addbar { height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 7px; padding: 0 8px 0 10px; background: var(--chrome); border-bottom: 1px solid var(--border); }
+.addbar svg { color: var(--text-muted); flex-shrink: 0; display: block; }
+.addfield { flex: 1; border: none; background: none; font-size: 12.5px; color: var(--text); outline: none; font-family: inherit; }
+.addfield::placeholder { color: var(--text-muted); }
+.settingsbtn { display: flex; align-items: center; justify-content: center; width: 25px; height: 25px; flex-shrink: 0; border-radius: 3px; background: transparent; border: none; color: var(--text-muted); cursor: pointer; }
+.settingsbtn:hover { background: rgba(0, 0, 0, 0.07); color: var(--text); }
+.settingsbtn svg { display: block; }
+#add-error { font-size: 11.5px; color: var(--danger); padding: 4px 10px; }
+#add-error.hidden { display: none; }
+
+/* Table header */
+.thead { display: flex; align-items: center; height: 25px; flex-shrink: 0; background: var(--chrome); border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600; color: var(--text-muted); padding: 0 10px; gap: 10px; }
+.thead .c-name { flex: 1; min-width: 0; }
+.thead .c-size { width: 60px; flex-shrink: 0; text-align: right; }
+.thead .c-progress { width: clamp(140px, 20vw, 340px); flex-shrink: 0; }
+.thead .c-status { width: 84px; flex-shrink: 0; }
+.thead .c-date { width: 72px; flex-shrink: 0; text-align: right; }
+
+/* Table body / rows */
+.tbody { flex: 1; overflow: auto; }
+.tbody::-webkit-scrollbar { width: 10px; }
+.tbody::-webkit-scrollbar-track { background: transparent; }
+.tbody::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid var(--bg); }
+.tbody::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+.trow { display: flex; align-items: center; height: 30px; padding: 0 10px; gap: 10px; border-bottom: 1px solid var(--border); font-size: 12.5px; position: relative; }
+.trow:nth-child(even of .trow) { background: var(--zebra); }
+.trow .c-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trow .c-size { width: 60px; flex-shrink: 0; text-align: right; color: var(--text-muted); }
+.trow .c-progress { width: clamp(140px, 20vw, 340px); flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.trow .c-progress .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.trow .c-progress .bar .fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.trow .c-progress .pct { font-size: 11px; color: var(--text-muted); width: 32px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.trow .c-status { width: 84px; flex-shrink: 0; display: flex; align-items: center; gap: 5px; color: var(--text-muted); white-space: nowrap; }
+.trow .c-date { width: 72px; flex-shrink: 0; text-align: right; color: var(--text-muted); white-space: nowrap; }
+.trow .c-status svg { flex-shrink: 0; display: block; }
+.trow .c-status.failed { color: var(--danger); }
+.trow .acts { display: none; gap: 10px; width: 84px; flex-shrink: 0; justify-content: flex-end; font-size: 12px; }
+.trow .acts button { all: unset; cursor: pointer; color: var(--text-muted); }
+.trow .acts button:hover { color: var(--text); }
+.trow .acts button.primary { color: var(--accent); }
+.trow .acts button.danger:hover { color: var(--danger); }
+.trow:hover .c-status, .trow:focus-within .c-status { display: none; }
+.trow:hover .acts, .trow:focus-within .acts { display: flex; }
+.trow.open { background: var(--zebra); }
+
+/* Status bar */
+.statusbar { height: 24px; flex-shrink: 0; display: flex; align-items: center; gap: 6px; padding: 0 10px; background: var(--chrome); border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted); }
+
+/* Empty state */
+.tbody-empty { flex: 1; display: flex; align-items: center; justify-content: center; }
+.emptymsg { text-align: center; max-width: 280px; }
+.emptymsg svg { color: var(--text-muted); margin-bottom: 10px; }
+.emptymsg .h { font-size: 13px; color: var(--text); margin-bottom: 4px; }
+.emptymsg .sub { font-size: 11.5px; color: var(--text-muted); line-height: 1.4; }
+
+/* Responsive breakpoints -- must stay exactly these two */
+@media (max-width: 760px) {
+  .thead .c-date, .trow .c-date { display: none; }
+}
+@media (max-width: 560px) {
+  .thead .c-size, .trow .c-size { display: none; }
+  .thead .c-progress, .trow .c-progress { width: 96px; }
+}
+
+/* Unfold: the one accordion panel used for right-click menu AND the
+   per-row speed-limit mini-form (two mechanisms unified) */
+.unfold { background: var(--zebra); border-bottom: 1px solid var(--border); padding: 2px 10px 10px; display: none; }
+.unfold.hidden { display: none; }
+.trow.open + .unfold { display: block; }
+.unfold .uf-error { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--danger); padding: 8px 8px 4px; }
+.unfold .uf-error svg { flex-shrink: 0; display: block; }
+.unfold .uf-opt { all: unset; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 3px; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.unfold .uf-opt:hover { background: rgba(0, 103, 192, 0.08); }
+.unfold .uf-opt.danger:hover { background: rgba(196, 43, 28, 0.08); color: var(--danger); }
+.unfold .uf-opt svg { flex-shrink: 0; display: block; color: var(--text-muted); }
+.unfold .uf-div { height: 1px; background: var(--border); margin: 4px 4px; }
+.unfold .uf-form { display: flex; gap: 8px; padding: 7px 8px; align-items: center; }
+.unfold .uf-form input { flex: 1; height: 24px; padding: 0 8px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; font-family: inherit; }
+.unfold .uf-form button { height: 24px; padding: 0 10px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); font-size: 12px; cursor: pointer; }
+.unfold .uf-form button:hover { background: var(--chrome); }
+
+/* Page wrappers: flex-column ancestor that .header/.body/.footer/.tbody/.tbody-empty rely on */
+#ledger-page, #settings-page { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#ledger-page.hidden, #settings-page.hidden { display: none; }
+
+/* Settings page chrome */
+.header { height: 34px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; background: var(--chrome); border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 600; }
+.header .close { all: unset; font-size: 12px; font-weight: 400; color: var(--accent); cursor: pointer; }
+.header .close:hover { text-decoration: underline; }
+.body { flex: 1; overflow: auto; padding: 14px 18px 6px; }
+/* Thin, unobtrusive scrollbar -- the OS-default one looks out of place
+   next to the rest of this window's custom-styled chrome. */
+.body::-webkit-scrollbar { width: 10px; }
+.body::-webkit-scrollbar-track { background: transparent; }
+.body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid var(--bg); }
+.body::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+.footer { height: 36px; flex-shrink: 0; display: flex; align-items: center; padding: 0 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted); }
+#settings-page .footer { justify-content: space-between; }
+.btn { height: 26px; padding: 0 12px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; color: var(--text); background: var(--bg); cursor: pointer; font-family: inherit; white-space: nowrap; }
+.btn:hover { background: var(--chrome); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { filter: brightness(0.95); }
+
+/* Settings body */
+.section { margin-bottom: 22px; }
+.section:last-of-type { margin-bottom: 0; }
+.section .h { font-size: 13px; font-weight: 700; color: var(--text); margin: 0 2px 8px; }
+.section .rows { background: var(--zebra); border: 1px solid var(--border); border-radius: 6px; padding: 0 14px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+.section .rows .row:last-child { border-bottom: none; }
+.row .t { min-width: 0; flex: 1; }
+.row .t .l { font-size: 12.5px; color: var(--text); }
+.row .t .d { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.row .ctl { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.pathval { font-size: 11.5px; color: var(--text-muted); max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: none; background: none; text-align: right; }
+.smallinput { height: 26px; width: 80px; padding: 0 8px; border: 1px solid var(--border); border-radius: 3px; font-size: 12px; color: var(--text); background: var(--bg); text-align: right; font-family: inherit; }
+
+/* Shared error/hidden utilities */
+.hidden { display: none; }
+.error { color: var(--danger); font-size: 11.5px; }
+.error.hidden { display: none; }
+
+/* In-app confirm modal (confirmModal() in app.js) -- `window.confirm()`
+   never actually shows anything in this webview (silently resolves as if
+   the user clicked OK), so every yes/no prompt needs its own UI instead. */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal-box { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 16px; width: 300px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2); }
+.modal-box .modal-msg { font-size: 12.5px; color: var(--text); line-height: 1.5; margin-bottom: 14px; white-space: pre-line; }
+.modal-box .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.modal-box .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.modal-box .btn.danger:hover { filter: brightness(0.95); }

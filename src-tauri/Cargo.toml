@@ -1,0 +1,29 @@
+[package]
+name = "loadout"
+version = "0.1.0"
+description = "A download manager: multi-segment downloads, browser-extension handoff, and yt-dlp-powered video extraction"
+authors = ["Naufal Alief"]
+license = "MIT"
+repository = "https://github.com/naufalalief/loadout-download-manager"
+edition = "2024"
+rust-version = "1.90"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tauri = "2.12.5"
+tokio = { version = "1.54.1", features = ["full"] }
+reqwest = { version = "0.13.5", features = ["stream", "cookies"] }
+uuid = { version = "1.29.2", features = ["v4"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+dirs = "7.0.0"
+tauri-plugin-opener = "2.7.3"
+tauri-plugin-dialog = "2.8.4"
+
+[dev-dependencies]
+wiremock = "0.6.5"
