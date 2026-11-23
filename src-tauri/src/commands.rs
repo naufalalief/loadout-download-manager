@@ -15,6 +15,7 @@ use loadout::extract::jobs::{ExtractJobInfo, ExtractJobManager};
 use loadout::server::{PAIRING_MODE_DURATION, PairedProfileInfo, PairingState};
 use reqwest::header::{CONTENT_TYPE, RANGE, USER_AGENT};
 use tauri::{Manager, State};
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -257,6 +258,29 @@ pub fn set_settings(
     queue.set_download_dir(download_dir.clone());
     extract_jobs.set_download_dir(download_dir);
     Ok(())
+}
+
+/// Backs the Settings panel's "Start at login" toggle: persists `enabled`
+/// into the stored settings (so `main.rs` applies it again on the next
+/// launch) and also applies it to the real OS autostart entry
+/// immediately, via the same `tauri_plugin_autostart` call `main.rs`'s own
+/// startup path uses.
+#[tauri::command]
+pub fn set_autostart(
+    enabled: bool,
+    app: tauri::AppHandle,
+    store: State<Arc<SettingsStore>>,
+) -> Result<(), String> {
+    let mut settings = store.get();
+    settings.start_at_login = enabled;
+    store.set(settings).map_err(|e| e.to_string())?;
+
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch.enable().map_err(|e| e.to_string())
+    } else {
+        autolaunch.disable().map_err(|e| e.to_string())
+    }
 }
 
 /// Opens `path` with the OS's default app for it -- backs the queue row

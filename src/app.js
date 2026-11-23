@@ -28,6 +28,9 @@ const settingsDownloadDirEl = document.getElementById("settings-download-dir");
 const settingsBrowseDownloadDirEl = document.getElementById("settings-browse-download-dir");
 const settingsMaxConcurrentEl = document.getElementById("settings-max-concurrent");
 const settingsSpeedLimitEl = document.getElementById("settings-speed-limit");
+const settingDownloadChimeEl = document.getElementById("setting-download-chime");
+const settingAutoRetryEl = document.getElementById("setting-auto-retry");
+const settingStartAtLoginEl = document.getElementById("setting-start-at-login");
 const settingsErrorEl = document.getElementById("settings-error");
 const checkYtdlpUpdateBtn = document.getElementById("check-ytdlp-update-btn");
 const ytdlpUpdateStatusEl = document.getElementById("ytdlp-update-status");
@@ -298,6 +301,7 @@ function createRow(item) {
     actionsKey: null,
     statusKey: null,
     currentItem: null,
+    lastStatus: undefined,
   };
 
   // Right-click opens the row's unfold (FDM/IDM-style), double-click a
@@ -754,9 +758,22 @@ function closeUnfoldsOutside(event) {
   }
 }
 document.addEventListener("click", closeUnfoldsOutside);
+// The OS-chrome right-click menu itself is suppressed natively (main.rs,
+// via WebView2's `SetAreDefaultContextMenusEnabled(false)`) -- same as
+// devtools/page-zoom/drag-drop-navigation via tauri.conf.json's
+// devtools/zoomHotkeysEnabled/dragDropEnabled window settings. This
+// listener just reuses the event to close an open dropdown when you
+// right-click outside it (rows supply their own context menu via the
+// handler in createRow, which stops propagation before this ever sees it).
 document.addEventListener("contextmenu", closeUnfoldsOutside);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") for (const id of Array.from(openUnfoldIds)) closeUnfold(id);
+
+  // Suppress browser-native reload and "view source", which have no
+  // Tauri-level equivalent to disable them natively.
+  const mod = event.ctrlKey || event.metaKey;
+  const key = event.key.toLowerCase();
+  if (event.key === "F5" || (mod && key === "r") || (mod && key === "u")) event.preventDefault();
 });
 
 function updateRow(els, item) {
@@ -943,6 +960,7 @@ async function refreshList() {
       rowsById.set(rowId, els);
     }
     updateRow(els, item);
+    handleStatusTransition(rowId, els, item);
 
     // Keep DOM order matching the backend's order, moving a row only if
     // it's actually out of place (moving detaches it, which would also
@@ -1018,10 +1036,88 @@ addFormEl.addEventListener("submit", async (event) => {
   }
 });
 
-// Cached copy of the persisted settings, refreshed every time Settings
-// opens and updated after every successful save, so a save only ever
-// merges its patch onto a value known to still be current.
-let currentSettings = null;
+// Cached copy of the persisted settings, kept in sync by every place that
+// loads or saves them (the Settings page's open handler and its save), so
+// `handleStatusTransition` below can check `download_chime`/
+// `auto_retry_failed` on every poll without an `invoke` round-trip per row
+// per poll. Defaults match `SettingsDto::default()` until the real startup
+// fetch (below) resolves.
+let currentSettings = { download_chime: true, auto_retry_failed: false, start_at_login: true };
+invoke("get_settings")
+  .then((settings) => {
+    currentSettings = settings;
+  })
+  .catch((err) => console.error("Failed to load settings:", err));
+
+// How many times `handleStatusTransition` has auto-retried a row since its
+// last non-Failed status, keyed by `rowIdFor`'s id. Capped so a download/
+// extraction that keeps failing the same way doesn't retry forever; reset
+// (by deletion) the moment a row is seen in any status other than Failed,
+// so a later, unrelated failure of the same row starts counting fresh.
+const autoRetryCounts = new Map();
+const AUTO_RETRY_MAX_ATTEMPTS = 3;
+
+// Plays a short, soft two-tone notification chime via the Web Audio API
+// -- synthesized at runtime rather than shipping a sound asset, so
+// there's no licensing/sourcing question for what file to bundle. Never
+// throws: AudioContext can be unavailable (and in some browsers requires a
+// prior user gesture, which every path that calls this already follows,
+// since it only ever fires off the back of a poll reacting to a download
+// the user themselves started).
+function playDownloadChime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const now = ctx.currentTime;
+    [880, 1108].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const start = now + i * 0.1;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.12, start + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.32);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.34);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 700);
+  } catch (err) {
+    // No Web Audio support, or the browser blocked it -- the chime is a
+    // nice-to-have, never worth surfacing an error for.
+  }
+}
+
+// Reacts to a row's status actually CHANGING since the last poll --
+// never to its current value alone, so a job that was already Completed/
+// Failed when the app started (or when this row was first seen) never
+// fires a chime or an auto-retry it didn't just newly earn. `els.lastStatus`
+// is `undefined` on a row's first sight, which the `previousStatus != null`
+// check below treats the same as "not already Completed/Failed".
+function handleStatusTransition(rowId, els, item) {
+  const previousStatus = els.lastStatus;
+  els.lastStatus = item.status;
+
+  if (previousStatus != null && previousStatus !== "Completed" && item.status === "Completed") {
+    if (currentSettings.download_chime) {
+      playDownloadChime();
+    }
+  }
+
+  if (item.status !== "Failed") {
+    autoRetryCounts.delete(rowId);
+    return;
+  }
+
+  if (previousStatus != null && previousStatus !== "Failed" && currentSettings.auto_retry_failed) {
+    const attempts = autoRetryCounts.get(rowId) ?? 0;
+    if (attempts < AUTO_RETRY_MAX_ATTEMPTS) {
+      autoRetryCounts.set(rowId, attempts + 1);
+      const command = item.kind === "extract" ? "retry_extract_job" : "retry_download";
+      invoke(command, { id: item.id }).catch((err) => console.error(`${command} failed:`, err));
+    }
+  }
+}
 
 // Serializes every settings-mutating operation so a write only ever merges
 // onto `currentSettings` after every earlier-queued write has actually
@@ -1213,6 +1309,15 @@ allowNewPairingBtn.addEventListener("click", async () => {
   }
 });
 
+function setSwitch(el, on) {
+  el.classList.toggle("on", on);
+  el.classList.toggle("off", !on);
+}
+
+function isSwitchOn(el) {
+  return el.classList.contains("on");
+}
+
 function setStatus(el, message, isError) {
   el.textContent = message;
   el.classList.toggle("error", Boolean(isError));
@@ -1230,6 +1335,9 @@ shedBtn.addEventListener("click", async () => {
     settingsDownloadDirEl.value = settings.download_dir;
     settingsMaxConcurrentEl.value = settings.max_concurrent;
     settingsSpeedLimitEl.value = settings.default_speed_limit_bytes_per_sec ?? "";
+    setSwitch(settingDownloadChimeEl, settings.download_chime);
+    setSwitch(settingAutoRetryEl, settings.auto_retry_failed);
+    setSwitch(settingStartAtLoginEl, settings.start_at_login);
     showPage(settingsPageEl);
     await refreshPairedProfiles();
     const remaining = await invoke("pairing_mode_remaining_seconds");
@@ -1266,6 +1374,19 @@ settingsBrowseDownloadDirEl.addEventListener("click", async () => {
   }
 });
 
+// Each switch saves itself on click; a failed save flips it back.
+settingDownloadChimeEl.addEventListener("click", async () => {
+  const next = !isSwitchOn(settingDownloadChimeEl);
+  setSwitch(settingDownloadChimeEl, next);
+  if (!(await saveSettings({ download_chime: next }))) setSwitch(settingDownloadChimeEl, !next);
+});
+
+settingAutoRetryEl.addEventListener("click", async () => {
+  const next = !isSwitchOn(settingAutoRetryEl);
+  setSwitch(settingAutoRetryEl, next);
+  if (!(await saveSettings({ auto_retry_failed: next }))) setSwitch(settingAutoRetryEl, !next);
+});
+
 // Downloads-at-once and the default speed limit commit on blur or Enter
 // (a no-op when the value didn't actually change).
 function commitOnBlurOrEnter(inputEl, commit) {
@@ -1292,6 +1413,29 @@ commitOnBlurOrEnter(settingsSpeedLimitEl, async () => {
   if (await saveSettings({ default_speed_limit_bytes_per_sec: value })) {
     settingsSpeedLimitEl.value = value ?? "";
   }
+});
+
+// Like the switches above, "Start at login" applies immediately on click,
+// but via its own dedicated `set_autostart` command (a real OS-level
+// effect) rather than `set_settings`. Still routed through
+// `enqueueSettingsWrite` so it can't race a concurrent `saveSettings()`
+// call and silently revert it (or be reverted by it).
+settingStartAtLoginEl.addEventListener("click", async () => {
+  const next = !isSwitchOn(settingStartAtLoginEl);
+  setSwitch(settingStartAtLoginEl, next);
+  settingStartAtLoginEl.disabled = true;
+  const ok = await enqueueSettingsWrite(async () => {
+    try {
+      await invoke("set_autostart", { enabled: next });
+      currentSettings = { ...currentSettings, start_at_login: next };
+      return true;
+    } catch (err) {
+      console.error("set_autostart failed:", err);
+      return false;
+    }
+  });
+  if (!ok) setSwitch(settingStartAtLoginEl, !next);
+  settingStartAtLoginEl.disabled = false;
 });
 
 // Settings has no Save button: every field saves itself at its own commit

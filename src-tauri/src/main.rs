@@ -3,6 +3,7 @@
 
 mod commands;
 mod settings;
+mod tray;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,14 +13,20 @@ use loadout::extract::binaries::BinaryManager;
 use loadout::extract::jobs::ExtractJobManager;
 use loadout::server::{self, PairingState};
 use tauri::Manager;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
-/// Shows, unminimizes, and focuses the main window. Called by the
-/// single-instance callback below -- a second launch (e.g. from the Start
-/// menu while the app is already running) hands off to this one instead
-/// of starting a second process that would try to bind the same handoff
-/// server port -- and by a new extract job's window-opener callback, so
-/// the app surfaces itself when the extension starts an extraction while
-/// it was in the background.
+/// Command-line flag passed to the app only when the OS launches it via the
+/// autostart-at-login entry (see the `tauri_plugin_autostart::init` call
+/// below). Its presence is how `main` tells "started silently at login"
+/// (stay hidden in the tray) apart from "the user explicitly launched it"
+/// (show the window).
+const AUTOSTART_FLAG: &str = "--autostart";
+
+/// Shows, unminimizes, and focuses the main window. Shared by the
+/// single-instance callback (a second launch while already running), the
+/// manual-first-launch path in `setup`, and a new extract job's window-
+/// opener callback, so the app surfaces itself when the extension starts
+/// an extraction while it was in the background or tray.
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -80,14 +87,17 @@ fn main() {
         ))
     };
 
+    let launched_by_autostart = std::env::args().any(|arg| arg == AUTOSTART_FLAG);
+    let start_at_login = initial_settings.start_at_login;
+
     tauri::Builder::default()
         // Must be the first plugin registered (per the plugin's own docs):
         // a second launch (e.g. from the Start menu while the app is
-        // already running) must hand off to this instance and exit before
-        // anything else -- in particular before a second `QueueManager`/
-        // handoff server could touch the same state file or port. The
-        // second process never gets past this plugin's init; this
-        // callback runs in the *first* process.
+        // already running in the tray) must hand off to this instance and
+        // exit before anything else -- in particular before a second
+        // `QueueManager`/handoff server could touch the same state file,
+        // staging files, or port. The second process never gets past this
+        // plugin's init; this callback runs in the *first* process.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
@@ -96,12 +106,43 @@ fn main() {
         .manage(Arc::clone(&binaries))
         .manage(Arc::clone(&extract_jobs))
         .manage(Arc::clone(&pairing_state))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![AUTOSTART_FLAG]),
+        ))
+        // Back the Browser Companion Setup Guide's "OPEN PAGE"/"OPEN FOLDER"
+        // buttons (`commands::open_extensions_page`/`open_extension_folder`).
+        // Neither has the single-instance plugin's "must be first" ordering
+        // constraint, so registration order relative to the other plugins
+        // here doesn't matter.
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         // Backs the Settings panel's download-folder "Change" button
         // (`commands::pick_download_folder`).
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            tray::build_tray(app.handle())?;
+
+            // Desktop app, not a browser page -- disable the WebView2
+            // engine's own right-click menu (Back/Reload/Inspect Element/...)
+            // at the native layer, same as the devtools/zoomHotkeysEnabled/
+            // dragDropEnabled window settings in tauri.conf.json. The app's
+            // own per-row and dropdown-dismiss handlers (src/app.js) react to
+            // the same `contextmenu` event for unrelated custom UI, not this
+            // native menu, so they're unaffected by it being gone.
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.with_webview(|webview| {
+                    unsafe {
+                        if let Ok(core) = webview.controller().CoreWebView2() {
+                            if let Ok(settings) = core.Settings() {
+                                let _ = settings.SetAreDefaultContextMenusEnabled(false);
+                            }
+                        }
+                    }
+                });
+            }
+
             // Replaces the placeholder `on_new_job` callback `extract_jobs`
             // was constructed with above (no `AppHandle` existed yet at
             // that point) with the real one, now that it does.
@@ -110,11 +151,34 @@ fn main() {
                 show_main_window(&opener_handle);
             }));
 
-            show_main_window(app.handle());
+            // The window starts hidden (`"visible": false` in
+            // tauri.conf.json) so autostart-at-login never pops it up.
+            // An explicit, manual launch (Start menu, desktop shortcut,
+            // installer's "run now") is an on-demand open, so show it.
+            if !launched_by_autostart {
+                show_main_window(app.handle());
+            }
+
+            // Applies whatever "start at login" was last set to (default
+            // true on a fresh install -- see `SettingsDto::default`);
+            // every later change goes through `commands::set_autostart`
+            // instead, live.
+            let autolaunch = app.autolaunch();
+            let _ = if start_at_login {
+                autolaunch.enable()
+            } else {
+                autolaunch.disable()
+            };
 
             tauri::async_runtime::spawn(server::serve(handoff_queue, pairing_state, extract_jobs));
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::add_download,
@@ -129,6 +193,7 @@ fn main() {
             commands::set_download_speed_limit,
             commands::get_settings,
             commands::set_settings,
+            commands::set_autostart,
             commands::pick_download_folder,
             commands::open_path_in_default_app,
             commands::reveal_path_in_file_manager,
