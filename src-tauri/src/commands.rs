@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use loadout::download::queue::QueueManager;
 use loadout::download::types::{DownloadInfo, DownloadRequest};
+use loadout::extract::binaries::BinaryManager;
+use loadout::extract::jobs::{ExtractJobInfo, ExtractJobManager};
 use loadout::server::{PAIRING_MODE_DURATION, PairedProfileInfo, PairingState};
 use tauri::{Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -134,19 +136,21 @@ pub fn pick_download_folder(app: tauri::AppHandle) -> Option<String> {
 /// `max_concurrent` changes here only take effect the next time the app
 /// starts (see `settings.rs`'s doc comment). `default_speed_limit_bytes_per_sec`
 /// and `download_dir` are additionally pushed into the running
-/// `QueueManager` immediately, so both apply to every download added from
-/// now on.
+/// `QueueManager`/`ExtractJobManager` immediately, so both apply to every
+/// download/extraction added from now on (UI- or extension-added alike).
 #[tauri::command]
 pub fn set_settings(
     settings: SettingsDto,
     store: State<Arc<SettingsStore>>,
     queue: State<Arc<QueueManager>>,
+    extract_jobs: State<Arc<ExtractJobManager>>,
 ) -> Result<(), String> {
     let default_speed_limit = settings.default_speed_limit_bytes_per_sec;
     let download_dir = std::path::PathBuf::from(&settings.download_dir);
     store.set(settings).map_err(|e| e.to_string())?;
     queue.set_default_speed_limit(default_speed_limit);
-    queue.set_download_dir(download_dir);
+    queue.set_download_dir(download_dir.clone());
+    extract_jobs.set_download_dir(download_dir);
     Ok(())
 }
 
@@ -263,4 +267,65 @@ pub fn rename_paired_profile(
     } else {
         Err(format!("no paired profile with id '{id}'"))
     }
+}
+
+/// Returns the current snapshot of every tracked extract job (video/
+/// social-platform URLs handed off from the browser extension).
+#[tauri::command]
+pub fn list_extract_jobs(jobs: State<Arc<ExtractJobManager>>) -> Vec<ExtractJobInfo> {
+    jobs.list()
+}
+
+/// Starts the download for an extract job awaiting a format choice.
+#[tauri::command]
+pub fn choose_extract_format(
+    id: String,
+    format_label: String,
+    jobs: State<Arc<ExtractJobManager>>,
+) -> Result<(), String> {
+    jobs.choose_format(&id, &format_label)
+}
+
+/// Kills an extract job's live subprocess (if any) and marks it canceled.
+#[tauri::command]
+pub fn cancel_extract_job(id: String, jobs: State<Arc<ExtractJobManager>>) -> Result<(), String> {
+    jobs.cancel(&id);
+    Ok(())
+}
+
+/// Re-probes a failed extract job from scratch, using its originally
+/// captured source URL/headers.
+#[tauri::command]
+pub fn retry_extract_job(id: String, jobs: State<Arc<ExtractJobManager>>) -> Result<(), String> {
+    jobs.retry(&id)
+}
+
+/// Removes a terminal-status (`Completed`/`Failed`/`Canceled`) extract job
+/// from the tracked jobs list and drops its cached extraction data. Errors
+/// (removing nothing) for a job that's missing or still live.
+#[tauri::command]
+pub fn remove_extract_job(id: String, jobs: State<Arc<ExtractJobManager>>) -> Result<(), String> {
+    jobs.remove(&id)
+}
+
+/// Removes an extract job *and*, if it is `Completed`, deletes its
+/// finished file from disk. The frontend only calls this after the user
+/// has explicitly confirmed the deletion -- mirrors
+/// `remove_download_and_delete_file` for ordinary downloads.
+#[tauri::command]
+pub fn remove_extract_job_and_delete_file(
+    id: String,
+    jobs: State<Arc<ExtractJobManager>>,
+) -> Result<(), String> {
+    jobs.remove_and_delete_file(&id)
+}
+
+/// Unconditionally re-fetches and overwrites `yt-dlp.exe`.
+#[tauri::command]
+pub async fn check_ytdlp_update(binaries: State<'_, Arc<BinaryManager>>) -> Result<String, String> {
+    binaries
+        .update_ytdlp()
+        .await
+        .map(|_| "yt-dlp updated to the latest version.".to_string())
+        .map_err(|e| e.to_string())
 }

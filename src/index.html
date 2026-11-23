@@ -38,7 +38,7 @@
           <div class="emptymsg">
             <svg id="empty-state-icon" width="46" height="46" viewBox="0 0 24 24"></svg>
             <div class="h">No downloads yet</div>
-            <div class="sub">Paste a link above to get started.</div>
+            <div class="sub">Paste a link above, or hover a video in your browser once the extension is installed.</div>
           </div>
         </div>
 
@@ -97,8 +97,17 @@
             <div class="rows">
               <div class="row">
                 <div class="t">
-                  <div class="l">Browser extension</div>
-                  <div class="d">Send browser downloads straight to Loadout</div>
+                  <div class="l">Video tools</div>
+                  <div id="ytdlp-update-status" class="ssub"></div>
+                </div>
+                <div class="ctl">
+                  <button type="button" id="check-ytdlp-update-btn" class="btn">Check for update</button>
+                </div>
+              </div>
+              <div class="row">
+                <div class="t">
+                  <div class="l">Hover-to-download button</div>
+                  <div class="d">Set up the extension's hover-to-download button</div>
                 </div>
                 <div class="ctl">
                   <button type="button" class="link" id="browser-setup-btn">Setup guide</button>
@@ -140,8 +149,8 @@
           <button type="button" class="close" id="browser-setup-close-btn">Close</button>
         </div>
         <div class="body">
-          <div class="intro">The Browser Companion captures your browser downloads and sends them straight to
-            Loadout. It's a one-time, 1-minute setup &mdash; you won't need to do this again.</div>
+          <div class="intro">The Browser Companion adds a <b>Download</b> button when you hover a video, and sends
+            links straight to Loadout. It's a one-time, 1-minute setup &mdash; you won't need to do this again.</div>
 
           <div class="step">
             <div class="num">1</div>
@@ -178,8 +187,8 @@
             </div>
           </div>
 
-          <div class="intro">&#128204; Tip: pin it to your toolbar (the puzzle-piece icon in Chrome) so it's always
-            one click away.</div>
+          <div class="intro">&#128204; Tip: pin it to your toolbar (the puzzle-piece icon in Chrome) so the Download
+            button is always one click away.</div>
 
           <p id="browser-setup-error" class="error hidden"></p>
         </div>

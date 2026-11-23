@@ -4,10 +4,66 @@ use std::time::Duration;
 
 use loadout::download::queue::QueueManager;
 use loadout::download::types::{DownloadInfo, DownloadStatus};
+use loadout::extract::jobs::ExtractJobManager;
 use loadout::server::{PairingState, router_for_port};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use wiremock::matchers::{any, header};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// Source for a trivial native stub "yt-dlp"/"ffmpeg" binary used by this
+/// file's `/extract` tests, compiled once (see [`stub_binary_path`]) and
+/// shared as both the `ytdlp_path` and `ffmpeg_path` arguments to
+/// `ExtractJobManager::new_with_binaries`. It does nothing but exit `0`
+/// immediately -- a compiled native stub rather than a `.cmd` batch file,
+/// because cmd.exe's own `%`-expansion mangles yt-dlp's
+/// `-o "%(title)s.%(ext)s"` template argument (see Task 2's own stub for
+/// the same reasoning).
+///
+/// These tests exercise the `/extract` HTTP route's auth/validation/wiring
+/// (token check, URL-scheme check, `probe()` being called and its id
+/// showing up in `list()`), never yt-dlp's actual probe/download behavior
+/// -- that's already covered by `extract::jobs`'s own tests -- so the stub
+/// doesn't need to emit anything meaningful.
+const STUB_SOURCE: &str = "fn main() {}";
+
+fn stub_binary_path() -> std::path::PathBuf {
+    static STUB_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    STUB_PATH.get_or_init(compile_stub).clone()
+}
+
+fn compile_stub() -> std::path::PathBuf {
+    let dir = tempfile_dir();
+    let src_path = dir.join("stub_ytdlp.rs");
+    std::fs::write(&src_path, STUB_SOURCE).unwrap();
+    let exe_path = dir.join("stub_ytdlp.exe");
+
+    let output = std::process::Command::new("rustc")
+        .arg("--edition")
+        .arg("2021")
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&exe_path)
+        .output()
+        .expect("failed to invoke rustc to build the test stub yt-dlp binary");
+
+    assert!(
+        output.status.success(),
+        "failed to compile stub yt-dlp binary:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    exe_path
+}
+
+fn new_extract_jobs(download_dir: &std::path::Path) -> Arc<ExtractJobManager> {
+    let stub = stub_binary_path();
+    Arc::new(ExtractJobManager::new_with_binaries(
+        download_dir.to_path_buf(),
+        stub.clone(),
+        stub,
+        Arc::new(|| {}),
+    ))
+}
 
 /// Spins up `server::router(...)` on an OS-assigned ephemeral port (rather
 /// than the fixed `HANDOFF_PORT`, so tests can run concurrently / repeatedly
@@ -20,36 +76,53 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// its `Host`-header check accepts `127.0.0.1:<that port>` -- exactly what
 /// reqwest sends for the returned base URL.
 async fn setup() -> (String, Arc<QueueManager>, Arc<PairingState>) {
-    let (base_url, queue, pairing, _dir) = setup_with_dir().await;
+    let (base_url, queue, pairing, _extract_jobs, _dir) = setup_with_extract().await;
     (base_url, queue, pairing)
 }
 
 async fn setup_with_dir() -> (String, Arc<QueueManager>, Arc<PairingState>, std::path::PathBuf) {
+    let (base_url, queue, pairing, _extract_jobs, dir) = setup_with_extract().await;
+    (base_url, queue, pairing, dir)
+}
+
+async fn setup_with_extract() -> (
+    String,
+    Arc<QueueManager>,
+    Arc<PairingState>,
+    Arc<ExtractJobManager>,
+    std::path::PathBuf,
+) {
     let dir = tempfile_dir();
     let state_file = dir.join("queue_state.json");
     let storage_file = dir.join("paired_profiles.json");
 
     let queue = Arc::new(QueueManager::new(dir.clone(), state_file, 2));
     let pairing = Arc::new(PairingState::new(storage_file));
+    let extract_jobs = new_extract_jobs(&dir);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let app = router_for_port(Arc::clone(&queue), Arc::clone(&pairing), addr.port());
+    let app = router_for_port(
+        Arc::clone(&queue),
+        Arc::clone(&pairing),
+        Arc::clone(&extract_jobs),
+        addr.port(),
+    );
 
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
 
-    (format!("http://{addr}"), queue, pairing, dir)
+    (format!("http://{addr}"), queue, pairing, extract_jobs, dir)
 }
 
 /// Pairs a fresh client against `base_url` (the very first, zero-click
 /// pairing on a server whose `PairingState` has no profiles yet) and
 /// returns its token. Most tests below only need *a* valid token to
-/// exercise `/downloads` with, not the pairing flow itself.
+/// exercise `/downloads`/`/extract` with, not the pairing flow itself.
 async fn pair_and_get_token(base_url: &str) -> String {
     let resp = reqwest::Client::new()
         .post(format!("{base_url}/pair"))
@@ -454,6 +527,95 @@ async fn downloads_with_valid_token_and_body_adds_to_queue() {
     assert!(listed.iter().any(|d| d.id == id));
 }
 
+#[tokio::test]
+async fn extract_rejects_missing_or_wrong_token_without_probing() {
+    let (base_url, _queue, _pairing, extract_jobs, _dir) = setup_with_extract().await;
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "url": "https://example.invalid/video",
+        "headers": {}
+    });
+
+    let missing = client
+        .post(format!("{base_url}/extract"))
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 401);
+
+    let wrong = client
+        .post(format!("{base_url}/extract"))
+        .header("X-Dm-Token", "definitely-not-the-right-token")
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 401);
+
+    assert!(extract_jobs.list().is_empty());
+}
+
+/// Same C1 defense in depth as `/downloads`: a `/extract` body whose `url`
+/// isn't `http://`/`https://` must be rejected with `400` and never start a
+/// probe.
+#[tokio::test]
+async fn extract_rejects_non_http_url_without_probing() {
+    let (base_url, _queue, _pairing, extract_jobs, _dir) = setup_with_extract().await;
+    let token = pair_and_get_token(&base_url).await;
+    let client = reqwest::Client::new();
+
+    for url in [
+        "blob:https://example.com/abc-123",
+        "data:text/plain;base64,aGVsbG8=",
+        "not a url at all",
+    ] {
+        let body = serde_json::json!({ "url": url, "headers": {} });
+
+        let resp = client
+            .post(format!("{base_url}/extract"))
+            .header("X-Dm-Token", &token)
+            .header("Content-Type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 400, "expected 400 for url {url:?}");
+    }
+
+    assert!(extract_jobs.list().is_empty());
+}
+
+#[tokio::test]
+async fn extract_with_valid_token_and_http_url_returns_201_and_is_listed() {
+    let (base_url, _queue, _pairing, extract_jobs, _dir) = setup_with_extract().await;
+    let token = pair_and_get_token(&base_url).await;
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "url": "https://example.invalid/video",
+        "headers": {}
+    });
+
+    let resp = client
+        .post(format!("{base_url}/extract"))
+        .header("X-Dm-Token", &token)
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 201);
+    let parsed: serde_json::Value = serde_json::from_str(&resp.text().await.unwrap()).unwrap();
+    let id = parsed["id"].as_str().unwrap().to_string();
+
+    let listed = extract_jobs.list();
+    assert!(listed.iter().any(|j| j.id == id), "{listed:?}");
+}
+
 /// Fires several concurrent `POST /pair` requests at the *same* running
 /// server/`PairingState` instance (via `tokio::join!`, so they're all
 /// in-flight together rather than sequential) and asserts exactly one gets
@@ -619,9 +781,10 @@ async fn pair_endpoint_stays_closed_after_a_restart() {
     async fn serve_once(dir: &std::path::Path, storage_file: &std::path::Path) -> String {
         let queue = Arc::new(QueueManager::new(dir.to_path_buf(), dir.join("q.json"), 2));
         let pairing = Arc::new(PairingState::new(storage_file.to_path_buf()));
+        let extract_jobs = new_extract_jobs(dir);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let app = router_for_port(queue, pairing, addr.port());
+        let app = router_for_port(queue, pairing, extract_jobs, addr.port());
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
@@ -830,7 +993,7 @@ async fn requests_with_a_foreign_or_missing_host_header_are_rejected() {
     let (base_url, _queue, pairing) = setup().await;
     let port = base_url.rsplit(':').next().unwrap().to_string();
 
-    for path in ["/ping", "/pair", "/downloads"] {
+    for path in ["/ping", "/pair", "/downloads", "/extract"] {
         let method = if path == "/ping" { "GET" } else { "POST" };
         assert_eq!(
             raw_status(&base_url, method, path, Some(&format!("evil.example:{port}"))).await,
