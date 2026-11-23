@@ -3,12 +3,15 @@
 //! `max_concurrent` is read once by `QueueManager` at construction time
 //! (`main.rs`), so a change here via `set_settings` only takes effect on
 //! the next app restart -- there is no live-resize path for it.
-//! `download_dir` and `default_speed_limit_bytes_per_sec` have no such
-//! restriction: `main.rs` seeds both into `QueueManager` at startup, and
-//! `commands::set_settings` pushes every change into it live (via
-//! `QueueManager::set_download_dir`/`set_default_speed_limit`), applied to
-//! every download added from then on. `default_speed_limit_bytes_per_sec`'s
-//! `0` means "no limit", same as an empty value.
+//! `default_speed_limit_bytes_per_sec` and `download_dir` have no such
+//! restriction: `main.rs` seeds both into `QueueManager`/`ExtractJobManager`
+//! at startup, and `commands::set_settings` pushes every change into both
+//! live (via `QueueManager::set_default_speed_limit`/`set_download_dir` and
+//! `ExtractJobManager::set_download_dir`), applied to every download/
+//! extraction added from now on -- including ones handed off by the
+//! extension through the local server, not just UI-added ones.
+//! `default_speed_limit_bytes_per_sec`'s `0` means "no limit", same as an
+//! empty value.
 
 use std::fs;
 use std::path::PathBuf;
@@ -36,6 +39,33 @@ pub struct SettingsDto {
     pub download_dir: String,
     pub max_concurrent: usize,
     pub default_speed_limit_bytes_per_sec: Option<u64>,
+    /// Whether a short chime plays when a download/extract job reaches
+    /// `Completed` (frontend-only effect: `src/app.js` checks this on each
+    /// poll, nothing server-side reacts to it).
+    #[serde(default = "default_true")]
+    pub download_chime: bool,
+    /// Whether a `Failed` download/extract job is automatically retried
+    /// (frontend-only, same as `download_chime`: `src/app.js` calls the
+    /// same `retry_download`/`retry_extract_job` commands a manual retry
+    /// does, capped per row so a job that keeps failing doesn't retry
+    /// forever).
+    #[serde(default)]
+    pub auto_retry_failed: bool,
+    /// Whether the app launches at OS login. Unlike the two fields above,
+    /// this has a real backend effect: `commands::set_autostart` both
+    /// persists it here and calls `tauri_plugin_autostart` live, and
+    /// `main.rs` applies whatever was last persisted on every startup.
+    #[serde(default = "default_true")]
+    pub start_at_login: bool,
+}
+
+// `#[serde(default)]`'s field-level form (used for `auto_retry_failed`
+// above) only ever supplies `bool`'s own default (`false`); these two
+// fields need `true` instead, for settings.json files written before
+// this field existed -- deserializing one of those must not silently
+// flip a setting a user never touched.
+fn default_true() -> bool {
+    true
 }
 
 impl Default for SettingsDto {
@@ -49,6 +79,9 @@ impl Default for SettingsDto {
             download_dir,
             max_concurrent: 3,
             default_speed_limit_bytes_per_sec: None,
+            download_chime: true,
+            auto_retry_failed: false,
+            start_at_login: true,
         }
     }
 }

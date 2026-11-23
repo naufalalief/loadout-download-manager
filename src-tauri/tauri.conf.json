@@ -11,10 +11,16 @@
       {
         "label": "main",
         "title": "Loadout",
+        "visible": false,
         "width": 800,
         "height": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "decorations": true,
+        "transparent": false,
+        "dragDropEnabled": false,
+        "zoomHotkeysEnabled": false,
+        "devtools": false
       }
     ],
     "security": {
