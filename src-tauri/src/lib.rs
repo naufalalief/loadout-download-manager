@@ -3,3 +3,4 @@
 // binary. `main.rs` remains the Tauri app entry point and is unaffected.
 
 pub mod download;
+pub mod server;

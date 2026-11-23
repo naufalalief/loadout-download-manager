@@ -28,12 +28,25 @@ const settingsBrowseDownloadDirEl = document.getElementById("settings-browse-dow
 const settingsMaxConcurrentEl = document.getElementById("settings-max-concurrent");
 const settingsSpeedLimitEl = document.getElementById("settings-speed-limit");
 const settingsErrorEl = document.getElementById("settings-error");
+const allowNewPairingBtn = document.getElementById("allow-new-pairing-btn");
+const allowPairingStatusEl = document.getElementById("allow-pairing-status");
+const pairedProfilesListEl = document.getElementById("paired-profiles-list");
+const pairedProfilesEmptyEl = document.getElementById("paired-profiles-empty");
+const pairedProfilesDotEl = document.getElementById("paired-profiles-dot");
+const pairedProfilesCountEl = document.getElementById("paired-profiles-count");
 
-// The two full-window pages. Exactly one is visible at a time; the
-// statusbar sits outside both and is always shown.
+const browserSetupBtn = document.getElementById("browser-setup-btn");
+const browserSetupErrorEl = document.getElementById("browser-setup-error");
+const setupOpenPageBtn = document.getElementById("setup-open-page-btn");
+const setupPageStatusEl = document.getElementById("setup-page-status");
+const setupOpenFolderBtn = document.getElementById("setup-open-folder-btn");
+
+// The three full-window pages. Exactly one is visible at a time; the
+// statusbar sits outside all three and is always shown.
 const ledgerPageEl = document.getElementById("ledger-page");
 const settingsPageEl = document.getElementById("settings-page");
-const PAGES = [ledgerPageEl, settingsPageEl];
+const browserSetupPageEl = document.getElementById("browser-setup-page");
+const PAGES = [ledgerPageEl, settingsPageEl, browserSetupPageEl];
 function showPage(page) {
   for (const p of PAGES) p.classList.toggle("hidden", p !== page);
 }
@@ -840,6 +853,169 @@ async function saveSettings(patch) {
   });
 }
 
+// Renders a paired-profile's `paired_at` (Unix seconds, from the backend --
+// see `PairedProfile`'s doc comment) in the viewer's own locale/timezone.
+function formatPairedAt(unixSeconds) {
+  try {
+    return new Date(unixSeconds * 1000).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+  } catch (err) {
+    return "";
+  }
+}
+
+// One `.prow` in the paired-browsers list: the name (click to rename in
+// place via `rename_paired_profile`), its paired date, and a hover-only
+// "Forget" link (confirm, then `forget_paired_profile`).
+function buildProfileRow(profile) {
+  const row = document.createElement("div");
+  row.className = "prow";
+  // Focusable for the same reason `.trow` is (see createRow) -- reveals
+  // the hover-only "Forget" button via `.prow:focus-within` in styles.css.
+  row.tabIndex = 0;
+
+  const left = document.createElement("div");
+  const name = document.createElement("span");
+  name.className = "pname";
+  name.textContent = profile.label;
+  name.title = "Click to rename";
+  name.style.cursor = "text";
+  const date = document.createElement("span");
+  date.className = "pdate";
+  date.textContent = `paired ${formatPairedAt(profile.paired_at)}`;
+  left.append(name, date);
+
+  name.addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "pname";
+    input.value = name.textContent;
+    let finished = false;
+    const finish = async (commit) => {
+      if (finished) return;
+      finished = true;
+      const value = commit ? input.value.trim() || name.textContent : name.textContent;
+      name.textContent = value;
+      input.replaceWith(name);
+      if (!commit) return;
+      try {
+        await invoke("rename_paired_profile", { id: profile.id, label: value });
+      } catch (err) {
+        console.error("rename_paired_profile failed:", err);
+      }
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true);
+      } else if (event.key === "Escape") {
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+    name.replaceWith(input);
+    input.focus();
+    input.select();
+  });
+
+  const forget = document.createElement("button");
+  forget.type = "button";
+  forget.className = "unpair";
+  forget.textContent = "Forget";
+  let busy = false;
+  forget.addEventListener("click", async () => {
+    if (busy) return;
+    const confirmed = await confirmModal({
+      message: `Forget "${name.textContent}"? That browser will need to pair again before it can send downloads here.`,
+      confirmLabel: "Forget",
+      danger: true,
+    });
+    if (!confirmed) return;
+    busy = true;
+    try {
+      await invoke("forget_paired_profile", { id: profile.id });
+      await refreshPairedProfiles();
+    } catch (err) {
+      console.error("forget_paired_profile failed:", err);
+      busy = false;
+    }
+  });
+
+  row.append(left, forget);
+  return row;
+}
+
+// Rebuilds the Settings page's "Paired browsers" list (and its count row)
+// from scratch -- called whenever Settings opens and after any forget,
+// never kept in sync incrementally like the queue rows above.
+async function refreshPairedProfiles() {
+  let profiles = [];
+  try {
+    profiles = (await invoke("list_paired_profiles")) || [];
+  } catch (err) {
+    console.error("list_paired_profiles failed:", err);
+  }
+
+  pairedProfilesEmptyEl.classList.toggle("hidden", profiles.length > 0);
+  pairedProfilesCountEl.textContent = `${profiles.length} browser${profiles.length === 1 ? "" : "s"} paired`;
+  pairedProfilesDotEl.classList.toggle("off", profiles.length === 0);
+  pairedProfilesListEl.replaceChildren(...profiles.map(buildProfileRow));
+}
+
+const ALLOW_PAIRING_IDLE_TEXT = "Lets one more browser profile connect, for 2 minutes";
+let pairingCountdownId = null;
+
+function formatCountdown(totalSeconds) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+// Drives the "Allow" button's live countdown from `remaining` seconds down
+// to 0, ticking once a second -- called both right after the button is
+// clicked (with the duration `allow_new_pairing` itself just opened) and
+// when Settings is reopened while an earlier click's window is still
+// counting down (with whatever `pairing_mode_remaining_seconds` reports),
+// so the two can never show different numbers.
+function startPairingCountdown(remaining) {
+  if (pairingCountdownId != null) {
+    clearInterval(pairingCountdownId);
+  }
+  allowNewPairingBtn.disabled = true;
+
+  const tick = () => {
+    if (remaining <= 0) {
+      clearInterval(pairingCountdownId);
+      pairingCountdownId = null;
+      allowNewPairingBtn.disabled = false;
+      allowPairingStatusEl.textContent = ALLOW_PAIRING_IDLE_TEXT;
+      return;
+    }
+    allowPairingStatusEl.textContent = `Pairing open — ${formatCountdown(remaining)} left`;
+    remaining -= 1;
+  };
+  tick();
+  pairingCountdownId = setInterval(tick, 1000);
+}
+
+allowNewPairingBtn.addEventListener("click", async () => {
+  allowNewPairingBtn.disabled = true;
+  try {
+    const seconds = await invoke("allow_new_pairing");
+    startPairingCountdown(seconds);
+  } catch (err) {
+    console.error("allow_new_pairing failed:", err);
+    allowNewPairingBtn.disabled = false;
+  }
+});
+
+function setStatus(el, message, isError) {
+  el.textContent = message;
+  el.classList.toggle("error", Boolean(isError));
+}
+
 // Settings gear (in the addbar): loads the current settings into the
 // Settings page's controls, then swaps to that page.
 shedBtn.addEventListener("click", async () => {
@@ -851,6 +1027,14 @@ shedBtn.addEventListener("click", async () => {
     settingsMaxConcurrentEl.value = settings.max_concurrent;
     settingsSpeedLimitEl.value = settings.default_speed_limit_bytes_per_sec ?? "";
     showPage(settingsPageEl);
+    await refreshPairedProfiles();
+    const remaining = await invoke("pairing_mode_remaining_seconds");
+    if (remaining != null && remaining > 0) {
+      startPairingCountdown(remaining);
+    } else if (pairingCountdownId == null) {
+      allowNewPairingBtn.disabled = false;
+      allowPairingStatusEl.textContent = ALLOW_PAIRING_IDLE_TEXT;
+    }
   } catch (err) {
     console.error("Failed to load settings:", err);
   }
@@ -910,6 +1094,55 @@ commitOnBlurOrEnter(settingsSpeedLimitEl, async () => {
 // point (see the handlers above), so Close just navigates back.
 document.getElementById("settings-close-btn").addEventListener("click", () => {
   showPage(ledgerPageEl);
+});
+
+// Settings' "Setup guide" link opens the Browser setup page; its Close and
+// "Installed it" both return to Settings (no persisted "has the user set
+// up the extension" state exists, so there's nothing to tell them apart).
+browserSetupBtn.addEventListener("click", () => {
+  hideError(browserSetupErrorEl);
+  setStatus(setupPageStatusEl, "", false);
+  showPage(browserSetupPageEl);
+});
+document.getElementById("browser-setup-close-btn").addEventListener("click", () => {
+  showPage(settingsPageEl);
+});
+document.getElementById("setup-done-btn").addEventListener("click", () => {
+  showPage(settingsPageEl);
+});
+
+// "Open page" -- copies chrome://extensions to the clipboard via the real
+// `open_extensions_page` command. That command is clipboard-only on
+// purpose: chrome://extensions has no registered OS protocol handler on a
+// typical system, so attempting to open it would likely pop the OS's own
+// "choose an app" dialog instead -- see that command's own doc comment. The
+// confirmation is shown via `setStatus` (not `showError`) so this routine
+// confirmation never renders as if something had gone wrong.
+setupOpenPageBtn.addEventListener("click", async () => {
+  setupOpenPageBtn.disabled = true;
+  try {
+    const message = await invoke("open_extensions_page");
+    setStatus(setupPageStatusEl, message, false);
+  } catch (err) {
+    setStatus(setupPageStatusEl, String(err), true);
+  } finally {
+    setupOpenPageBtn.disabled = false;
+  }
+});
+
+// "Open folder" -- opens the bundled extension/ folder in the OS file
+// explorer. A successful open is its own confirmation (the explorer window
+// appearing), so only a failure needs an inline message here.
+setupOpenFolderBtn.addEventListener("click", async () => {
+  hideError(browserSetupErrorEl);
+  setupOpenFolderBtn.disabled = true;
+  try {
+    await invoke("open_extension_folder");
+  } catch (err) {
+    showError(browserSetupErrorEl, String(err));
+  } finally {
+    setupOpenFolderBtn.disabled = false;
+  }
 });
 
 // Settings gear, addbar arrow, and empty-state icon: all static (never

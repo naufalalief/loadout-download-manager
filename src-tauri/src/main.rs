@@ -8,6 +8,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use loadout::download::queue::QueueManager;
+use loadout::server::{self, PairingState};
+use tauri::Manager;
+
+/// Shows, unminimizes, and focuses the main window. Called by the
+/// single-instance callback below -- a second launch (e.g. from the Start
+/// menu while the app is already running) hands off to this one instead
+/// of starting a second process that would try to bind the same handoff
+/// server port.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
 
 fn main() {
     let settings_store = settings::SettingsStore::load(settings::settings_file_path());
@@ -30,17 +45,44 @@ fn main() {
             initial_settings.max_concurrent,
         ))
     };
+    // Applies to every download added from now on -- via the UI *and* via
+    // the handoff server -- since it lives inside `QueueManager` itself.
     queue_manager.set_default_speed_limit(initial_settings.default_speed_limit_bytes_per_sec);
 
     let settings_store = Arc::new(settings_store);
 
+    // Local handoff HTTP server (pairing + `/downloads`): shares the same
+    // `QueueManager` instance managed below, and persists its paired-
+    // profile list alongside the other app-data files.
+    let handoff_queue = Arc::clone(&queue_manager);
+    let pairing_state = Arc::new(PairingState::new(
+        settings::app_data_dir().join("paired_profiles.json"),
+    ));
+
     tauri::Builder::default()
+        // Must be the first plugin registered (per the plugin's own docs):
+        // a second launch (e.g. from the Start menu while the app is
+        // already running) must hand off to this instance and exit before
+        // anything else -- in particular before a second `QueueManager`/
+        // handoff server could touch the same state file or port. The
+        // second process never gets past this plugin's init; this
+        // callback runs in the *first* process.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .manage(queue_manager)
         .manage(settings_store)
+        .manage(Arc::clone(&pairing_state))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         // Backs the Settings panel's download-folder "Change" button
         // (`commands::pick_download_folder`).
         .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| {
+            show_main_window(app.handle());
+            tauri::async_runtime::spawn(server::serve(handoff_queue, pairing_state));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::add_download,
             commands::list_downloads,
@@ -56,6 +98,13 @@ fn main() {
             commands::pick_download_folder,
             commands::open_path_in_default_app,
             commands::reveal_path_in_file_manager,
+            commands::open_extensions_page,
+            commands::open_extension_folder,
+            commands::list_paired_profiles,
+            commands::allow_new_pairing,
+            commands::pairing_mode_remaining_seconds,
+            commands::forget_paired_profile,
+            commands::rename_paired_profile,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
